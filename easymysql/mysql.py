@@ -150,3 +150,10 @@ class mysql:
 
 	def close(self):
 		self.__db.close()
+
+	def resetCache(self):
+		self.command("RESET QUERY CACHE;")
+
+	def truncate(self,table):
+		if len(table)>0:
+			self.command("TRUNCATE {}".format(table))
