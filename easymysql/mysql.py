@@ -12,9 +12,9 @@ class mysql:
 	__db = None
 	__result = None
 
-	def __init__(self,hostname,username,passwrod,database):
+	def __init__(self,hostname,username,password,database):
 
-		self.__db = pymysql.connect(hostname=hostname,user=username,password=passwrod,database=database,cursorclass=pymysql.cursors.DictCursor)
+		self.__db = pymysql.connect(hostname=hostname,user=username,password=password,database=database,cursorclass=pymysql.cursors.DictCursor)
 
 		self.__cursor = self.__db.cursor()
 
