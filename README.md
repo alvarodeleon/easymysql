@@ -1,6 +1,6 @@
 # EasyMySQL, una librería para manejo de MySQL en Python
 
-[Sitio Wbe del proyecto](https://www.alvarodeleon.net/easymysql-una-libreria-para-manejo-de-mysql-en-python/)
+[Sitio Web del proyecto](https://www.alvarodeleon.net/easymysql-una-libreria-para-manejo-de-mysql-en-python/)
 
 ## Instalar EasyMySQL
 
