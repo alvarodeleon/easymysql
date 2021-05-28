@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import pymysql
+import pymysql.cursors
+
 import collections
 
 class mysql:
@@ -10,9 +12,9 @@ class mysql:
 	__db = None
 	__result = None
 
-	def __init__(self,hostname,username,passwod,database):
+	def __init__(self,hostname,username,passwrod,database):
 
-		self.__db = pymysql.connect(hostname,username,passwod,database)
+		self.__db = pymysql.connect(hostname=hostname,user=username,password=passwrod,database=database,cursorclass=pymysql.cursors.DictCursor)
 
 		self.__cursor = self.__db.cursor()
 
