@@ -106,7 +106,7 @@ lst = my.select('table_name', "field_1 LIKE '%value%',order='ORDER BY id DESC')
 lst = my.select('table_name', "field_1 LIKE '%value%',order='ORDER BY id DESC LIMIT 5')
 lst = my.select('table_name', "field_1 LIKE '%value%',order='ORDER BY id DESC LIMIT 1,10')
 ```
-##Recorrer Los Datos
+## Recorrer Los Datos
 
 Para recorer los datos solo se necesita un for:
 ```
