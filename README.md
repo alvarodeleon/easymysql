@@ -44,7 +44,7 @@ my.update('table_name',{
 	'id':300
 })
 ```
-En el ejemplo anterior los datos del 3 parámetro (el array) toma los datos y forma una cadena SQL estándar concatenados con AND, ejemplo:
+En el ejemplo anterior los datos del tercer parámetro (el array) toma los datos y forma una cadena SQL estándar concatenados con AND, ejemplo:
 ```
 my.update('table_name',{
 	'field_1':'value_1'
