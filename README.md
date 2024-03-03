@@ -2,6 +2,14 @@
 
 [Sitio Web del proyecto](https://www.alvarodeleon.net/easymysql-una-libreria-para-manejo-de-mysql-en-python/)
 
+## Downloads
+Total: [![Downloads](https://static.pepy.tech/badge/easymysql)](https://pepy.tech/project/easymysql)
+
+Last Month: [![Downloads](https://static.pepy.tech/badge/easymysql/month)](https://pepy.tech/project/easymysql)
+
+Last Week: [![Downloads](https://static.pepy.tech/badge/easymysql/week)](https://pepy.tech/project/easymysql)
+
+
 ## Instalar EasyMySQL
 
 ```
