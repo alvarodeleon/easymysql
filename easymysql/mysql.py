@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import pymysql
+import pymysql.cursors
 import collections
 
 class mysql:
