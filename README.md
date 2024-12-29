@@ -1,4 +1,4 @@
-# EasyMySQL, una librería para manejo de MySQL en Python
+# EasyMySQL: A Library for Managing MySQL in Python
 
 [Sitio Web del proyecto](https://www.alvarodeleon.net/easymysql-una-libreria-para-manejo-de-mysql-en-python/)
 
@@ -9,16 +9,16 @@
 
 
 
-## Instalar EasyMySQL
+## Installing EasyMySQL
 
 ```
 pip install easymysql
 ```
-Si les da algún error por tener una versión menor de Python pueden utilizar
+If you encounter an error due to having an older version of Python, you can use:
 ```
 pip3 install easymysql
 ```
-## Conectar A La Base De Datos
+## Connecting to the Database
 ```
 #!/usr/bin/python
 
@@ -27,8 +27,8 @@ from easymysql.mysql import mysql
 my = mysql('localhost','user_db','pass_db','db_name')
 ```
 
-## Insertar Datos
-Insertar datos es sumamente facil, solo hay que pasarle dos parámetros, el primero es el nombre de la tabla y el segundo un array con los datos a insertar:
+## Inserting Data
+Inserting data is extremely easy; you only need to provide two parameters: the table name and an array with the data to insert:
 ```
 my.insert('table_name',{
 	'field_1':'value_1',
@@ -36,12 +36,10 @@ my.insert('table_name',{
 	'field_3':'value_3',
 })
 ```
-Donde el array será Clave-Valor donde clave corresponde con el nombre del campo de la tabla y el valor el valor a insertar.
+The array uses a Key-Value format where the key corresponds to the table field name, and the value is the value to be inserted.
 
-## Actualizar Datos
-Actualizar datos es similar a insertar solo que ahora le pasamos 3 datos, primero el nombre de la tabla, en segundo lugar el array con los datos a actualizar, mismo formato de array Clave-Valor que al insertar.
-
-Por último el tercer parámetro es un array Clave-Valor con los datos del where o una cadena de texto SQL
+## Updating Data
+Updating data is similar to inserting, but this time you need to pass three parameters: the table name, an array with the data to update (Key-Value format), and a third parameter specifying the **WHERE** clause, either as a Key-Value array or a SQL string:
 ```
 my.update('table_name',{
 	'field_1':'value_1',
@@ -51,7 +49,7 @@ my.update('table_name',{
 	'id':300
 })
 ```
-En el ejemplo anterior los datos del tercer parámetro (el array) toma los datos y forma una cadena SQL estándar concatenados con AND, ejemplo:
+The third parameter, if given as an array, will generate a standard SQL string concatenated with **AND**. For example:
 ```
 my.update('table_name',{
 	'field_1':'value_1'
@@ -61,11 +59,11 @@ my.update('table_name',{
 })
 ```
 
-Esto se transformara en:
+This translates to:
 ```
 UPDATE table_name SET field_1=value_1 WHERE field_2='value_2' AND field_3='value_3'
 ```
-En el siguiente caso, el tercer parámetro en lugar de ser un array enviamos una cadena:
+Alternatively, if the third parameter is a string:
 ```
 my.update('table_name',{
 	'field_1':'value_1',
@@ -75,37 +73,37 @@ my.update('table_name',{
 	'field_2=value_2 OR field_3=value_3
 )
 ```
-La sentencia anterior se traduce en una sentencia SQL como la siguiente:
+This translates to:
 ```
 UPDATE table_name SET field_1=value_1,field_2=value_2,field_3=value_3 WHERE field_2='value_2' OR field_3='value_3'
 ```
-## Buscar Y Listar Datos
+## Querying and Listing Data
 
-Los select funcionan bastante parecidos que los casos anteriores, debemos pasarle el nombre de la tabla, el segundo parámetro es un array o un string con la consulta WHERE, en caso de omitir tarea los datos de toda la tabla, opcionalmente como tercer parámetro podemos establecer el orden
+The SELECT function works similarly to the previous cases. You provide the table name, an optional WHERE condition as an array or string, and optionally an ORDER clause as the third parameter.
 
-Para filtar datos:
+To filter data:
 ```
 lst = my.select('table_name', {'field_1': value_1})
 
 lst = my.select('table_name', "field_1='value_1'")
-
-#Si es un solo resultado:
-
+```
+If there's only one result:
+```
 [{'field_1': 'value_1', 'field_2': 'value_2','field_3':'value_3'}]
-
-#Si son varios:
-
+```
+If there are multiple results:
+```
 [{'field_1': 'value_1', 'field_2': 'value_2','field_3':'value_3'},
 {'field_1': 'value4', 'field_2': 'value_5','field_3':'value_6'},
 {'field_1': 'value_7', 'field_2': 'value_8','field_3':'value_9'}]
-
-O se puede generar un WHERE con SQL estándar con LIKE, OR, >, <, etc
-
+```
+You can also use standard SQL WHERE clauses with LIKE, OR, >, <, etc.:
+```
 lst = my.select('table_name', "field_1 LIKE '%value%')
 ```
-## Clausula Order
+## ORDER Clause
 
-Técnicamente la cláusula ORDER no es solo ORDER sino que podemos colocar cualquier sentencia SQL que vaya despues del WHERE
+Technically, the **ORDER** clause can include any SQL statement that follows the **WHERE** clause:
 ```
 lst = my.select('table_name', "field_1 LIKE '%value%',order='LIMIT 10')
 lst = my.select('table_name', "field_1 LIKE '%value%',order='LIMIT 1,10')
@@ -113,9 +111,9 @@ lst = my.select('table_name', "field_1 LIKE '%value%',order='ORDER BY id DESC')
 lst = my.select('table_name', "field_1 LIKE '%value%',order='ORDER BY id DESC LIMIT 5')
 lst = my.select('table_name', "field_1 LIKE '%value%',order='ORDER BY id DESC LIMIT 1,10')
 ```
-## Recorrer Los Datos
+## Iterating Through Data
 
-Para recorer los datos solo se necesita un for:
+To iterate through the data, simply use a **for** loop:
 ```
 lst = my.select('table_name')
 
