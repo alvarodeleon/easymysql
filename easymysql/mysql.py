@@ -26,7 +26,7 @@ class mysql:
 				self.connect()
 
 		def version(self):
-				return "0.1.9.1"
+				return "0.1.9.2"
 
 		def ping(self):
 				if self.__db.ping(reconnect=True):
