@@ -1,6 +1,6 @@
 # EasyMySQL: A Library for Managing MySQL in Python
 
-[Website](https://www.alvarodeleon.net/easymysql-una-libreria-para-manejo-de-mysql-en-python/)
+[Website](https://www.easymysql.com/)
 
 ## Downloads
 | **Total** | **Last Month** | **Last Week** |
