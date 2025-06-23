@@ -97,6 +97,9 @@ class mysql:
 
 			self.execute(query)
 
+			if self.__cursor.rowcount == 0:
+				return []
+			
 			tmp = map(lambda x:x[0], self.__cursor.description)
 
 			columns = []
