@@ -541,3 +541,8 @@ else:
 ```
 
 This documentation provides a complete guide for using both `InputRules` and the `check` class in the EasyMySQL context, allowing you to validate and sanitize data robustly before interacting with the database.
+
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](./LICENSE.txt) file for details.

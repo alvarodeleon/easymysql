@@ -1,4 +1,21 @@
 
+'''
+Copyright (C) 2020 Alvaro de Leon <info@alvarodeleon.com>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+'''
+
 from typing import Iterable, Union, Dict, Any
 
 def _process_condition(condition):
@@ -49,7 +66,7 @@ def _process_condition(condition):
 	# Para cualquier otro tipo, convertirlo a string
 	return str(condition)
 
-def select(self,table,condition: Union[str, Dict[str, Any]]="",fields="*",order="") -> str:
+def select(table, condition: Union[str, Dict[str, Any]]="", fields="*", order="") -> str:
 	# Procesar condición usando el helper
 	processed_condition = _process_condition(condition)
 
@@ -58,8 +75,8 @@ def select(self,table,condition: Union[str, Dict[str, Any]]="",fields="*",order=
 	else:
 		query = "SELECT " + fields + " FROM " + table
 
-		if len(order)>0:
-			query = query + " " + order
+	if len(order)>0:
+		query = query + " " + order
 
 	return query
 
@@ -118,10 +135,12 @@ def delete(table,condition):
     return f"DELETE FROM `{table}` WHERE {condition}"
 
 def like(field, value):
-    return f"`{field}` LIKE '%{value}%'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` LIKE '%{escaped_value}%'"
 
 def not_like(field, value):
-    return f"`{field}` NOT LIKE '%{value}%'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` NOT LIKE '%{escaped_value}%'"
 
 def concat_or(*args):
 	sentences = ""
@@ -138,29 +157,39 @@ def concat_and(*args):
 
 # Operadores de comparación
 def equals(field, value):
-    return f"`{field}` = '{value}'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` = '{escaped_value}'"
 
 def not_equals(field, value):
-    return f"`{field}` != '{value}'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` != '{escaped_value}'"
 
 def greater_than(field, value):
-    return f"`{field}` > '{value}'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` > '{escaped_value}'"
 
 def greater_than_or_equal(field, value):
-    return f"`{field}` >= '{value}'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` >= '{escaped_value}'"
 
 def less_than(field, value):
-    return f"`{field}` < '{value}'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` < '{escaped_value}'"
 
 def less_than_or_equal(field, value):
-    return f"`{field}` <= '{value}'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` <= '{escaped_value}'"
 
 # Operadores de rango
 def between(field, value1, value2):
-    return f"`{field}` BETWEEN '{value1}' AND '{value2}'"
+    escaped_value1 = str(value1).replace("'", "''")
+    escaped_value2 = str(value2).replace("'", "''")
+    return f"`{field}` BETWEEN '{escaped_value1}' AND '{escaped_value2}'"
 
 def not_between(field, value1, value2):
-    return f"`{field}` NOT BETWEEN '{value1}' AND '{value2}'"
+    escaped_value1 = str(value1).replace("'", "''")
+    escaped_value2 = str(value2).replace("'", "''")
+    return f"`{field}` NOT BETWEEN '{escaped_value1}' AND '{escaped_value2}'"
 
 # Operadores de existencia
 def exists(field):
@@ -168,11 +197,13 @@ def exists(field):
 
 
 def in_list(field, values):
-    values_str = "', '".join(str(v) for v in values)
+    escaped_values = [str(v).replace("'", "''") for v in values]
+    values_str = "', '".join(escaped_values)
     return f"`{field}` IN ('{values_str}')"
 
 def not_in_list(field, values):
-    values_str = "', '".join(str(v) for v in values)
+    escaped_values = [str(v).replace("'", "''") for v in values]
+    values_str = "', '".join(escaped_values)
     return f"`{field}` NOT IN ('{values_str}')"
 
 
@@ -187,29 +218,38 @@ def is_not_null(field):
 
 # Funciones de Texto Adicionales
 def starts_with(field, value):
-    return f"`{field}` LIKE '{value}%'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` LIKE '{escaped_value}%'"
 
 def ends_with(field, value):
-    return f"`{field}` LIKE '%{value}'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` LIKE '%{escaped_value}'"
 
 def contains(field, value):
-    return f"`{field}` LIKE '%{value}%'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` LIKE '%{escaped_value}%'"
 
 def not_contains(field, value):
-    return f"`{field}` NOT LIKE '%{value}%'"
+    escaped_value = str(value).replace("'", "''")
+    return f"`{field}` NOT LIKE '%{escaped_value}%'"
 
 # Funciones de Fecha
 def date_equals(field, date):
-    return f"DATE(`{field}`) = '{date}'"
+    escaped_date = str(date).replace("'", "''")
+    return f"DATE(`{field}`) = '{escaped_date}'"
 
 def date_greater_than(field, date):
-    return f"DATE(`{field}`) > '{date}'"
+    escaped_date = str(date).replace("'", "''")
+    return f"DATE(`{field}`) > '{escaped_date}'"
 
 def date_less_than(field, date):
-    return f"DATE(`{field}`) < '{date}'"
+    escaped_date = str(date).replace("'", "''")
+    return f"DATE(`{field}`) < '{escaped_date}'"
 
 def date_between(field, start_date, end_date):
-    return f"DATE(`{field}`) BETWEEN '{start_date}' AND '{end_date}'"
+    escaped_start = str(start_date).replace("'", "''")
+    escaped_end = str(end_date).replace("'", "''")
+    return f"DATE(`{field}`) BETWEEN '{escaped_start}' AND '{escaped_end}'"
 
 # Funciones de Ordenamiento
 def order_by(field, direction="ASC"):
@@ -218,8 +258,8 @@ def order_by(field, direction="ASC"):
 def order_by_desc(field):
     return f"ORDER BY `{field}` DESC"
 
-def limit_query(limit, offset=0):
-    if offset > 0:
+def limit_query(limit, offset=None):
+    if offset is not None:
         return f"LIMIT {offset}, {limit}"
     return f"LIMIT {limit}"
 

@@ -1,2 +1,4 @@
 dist/*
 build/*
+tests/*
+**/__pycache__/*
