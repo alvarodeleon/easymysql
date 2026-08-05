@@ -14,55 +14,75 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
+import functools
+import warnings
 from typing import Iterable, Union, Dict, Any
+
+from . import _sql
+from . import _conditions
+
+# ---------------------------------------------------------------------------
+# El motor vive en _sql.py, compartido con my_query: la única diferencia entre
+# los dos módulos es el dialecto.
+#
+# Las funciones `*_params` devuelven (sql, params) para que los valores viajen
+# por el driver. PostgreSQL con standard_conforming_strings=on no es vulnerable
+# al bypass por backslash que sí afecta a MySQL, pero el escapado manual sigue
+# sin cubrir los identificadores ni la conversión de tipos (bool, bytes,
+# datetime, Decimal, json), que psycopg2 hace correctamente.
+# ---------------------------------------------------------------------------
+
+DIALECT = _sql.POSTGRES
+PLACEHOLDER = _sql.PLACEHOLDER
+
+
+def _ident(name) -> str:
+	"""Delimita un identificador (columna) con comillas dobles."""
+	return DIALECT.ident(name)
+
+
+def _table(name) -> str:
+	"""Delimita un nombre de tabla, admitiendo la forma `esquema.tabla`."""
+	return DIALECT.table(name)
+
+
+def condition_params(condition: Union[str, Dict[str, Any], None]):
+	"""Convierte una condición en (fragmento_sql, params)."""
+	return _sql.condition_params(condition, DIALECT)
+
+
+def insert_params(table: str, data: dict, returning: str = "id"):
+	"""
+	Devuelve (sql, params) para un INSERT.
+
+	`returning` es el nombre de la columna a devolver, o None para omitir la
+	cláusula RETURNING en tablas que no tienen columna `id`.
+	"""
+	return _sql.insert_params(table, data, DIALECT, returning=returning)
+
+
+def update_params(table: str, data: dict, condition: Union[str, Dict[str, Any]]):
+	"""Devuelve (sql, params) para un UPDATE."""
+	return _sql.update_params(table, data, condition, DIALECT)
+
+
+def delete_params(table: str, condition: Union[str, Dict[str, Any]]):
+	"""Devuelve (sql, params) para un DELETE."""
+	return _sql.delete_params(table, condition, DIALECT)
+
+
+def select_params(table: str, condition: Union[str, Dict[str, Any]]="", fields="*", order=""):
+	"""Devuelve (sql, params) para un SELECT."""
+	return _sql.select_params(table, condition, fields, order, DIALECT)
+
 
 def _process_condition(condition):
 	"""
-	Procesa la condición convirtiendo diccionarios a string SQL WHERE.
-	Adaptado para PostgreSQL (usa comillas dobles para nombres de columnas).
-	
-	Args:
-		condition: Puede ser string, diccionario, None o cualquier otro tipo
-	
-	Returns:
-		str: Condición SQL formateada
+	Versión heredada que devuelve sólo el string, con el valor interpolado.
+
+	Preferí `condition_params()`.
 	"""
-	# Si es None o string vacío, retornar string vacío
-	if condition is None or condition == "":
-		return ""
-	
-	# Si es string, retornarlo directamente
-	if isinstance(condition, str):
-		return condition
-	
-	# Si es diccionario, procesarlo
-	if isinstance(condition, dict):
-		if not condition:  # Diccionario vacío
-			return ""
-		
-		conditions = []
-		for key, value in condition.items():
-			if value is None:
-				conditions.append(f'"{key}" IS NULL')
-			else:
-				# Escapar comillas simples para prevenir SQL injection
-				escaped_value = str(value).replace("'", "''")
-				conditions.append(f'"{key}" = \'{escaped_value}\'')
-		return " AND ".join(conditions)
-	
-	# Si es otro tipo iterable (como OrderedDict, etc.)
-	if hasattr(condition, 'items'):
-		conditions = []
-		for key, value in condition.items():
-			if value is None:
-				conditions.append(f'"{key}" IS NULL')
-			else:
-				escaped_value = str(value).replace("'", "''")
-				conditions.append(f'"{key}" = \'{escaped_value}\'')
-		return " AND ".join(conditions)
-	
-	# Para cualquier otro tipo, convertirlo a string
-	return str(condition)
+	return _sql.process_condition(condition, DIALECT)
 
 def select(table, condition: Union[str, Dict[str, Any]]="", fields="*", order="") -> str:
 	# Procesar condición usando el helper
@@ -194,8 +214,15 @@ def not_between(field, value1, value2):
     return f"{field} NOT BETWEEN '{escaped_value1}' AND '{escaped_value2}'"
 
 # Operadores de existencia
-def exists(field):
-    return f"EXISTS ({field})"
+def exists(subquery):
+    """
+    EXISTS sobre una subconsulta.
+
+    ⚠️ Recibe **SQL crudo** y lo interpola tal cual. El nombre del parámetro
+    era `field`, lo que inducía a `exists('activo')` → `EXISTS (activo)`,
+    error de sintaxis. Nunca lo construyas con entrada de usuario.
+    """
+    return f"EXISTS ({subquery})"
 
 
 def in_list(field, values):
@@ -269,8 +296,71 @@ def group_by(field):
     return f"GROUP BY {field}"
 
 def having(condition):
+    """
+    ⚠️ Recibe **SQL crudo** y lo interpola tal cual. Nunca lo construyas con
+    entrada de usuario sin validar.
+    """
     return f"HAVING {condition}"
 
 # Funciones de Negación
 def not_condition(condition):
+    """
+    ⚠️ Recibe **SQL crudo** y lo interpola tal cual. La versión parametrizada
+    es `where.not_(condicion)` o el operador `~`.
+    """
     return f"NOT ({condition})"
+
+
+# ---------------------------------------------------------------------------
+# Constructores parametrizados (recomendados)
+#
+# Los operadores de arriba interpolan el valor dentro del string SQL. `where`
+# devuelve objetos Condition, que llevan el SQL y los parámetros separados:
+#
+#     from easymysql.pg_query import where
+#     db.select("productos", where.equals("activo", True) & where.greater_than("stock", 0))
+#
+# Además corrigen bugs de resultado que los operadores viejos no pueden
+# arreglar sin cambiar su firma: lista vacía en in_list/not_in_list, comodines
+# de LIKE sin escapar, y precedencia al mezclar AND con OR.
+# ---------------------------------------------------------------------------
+
+where = _conditions.ConditionBuilder(DIALECT)
+Condition = _conditions.Condition
+
+
+def safe_order_by(field, direction="ASC"):
+	"""ORDER BY con la dirección validada contra ASC/DESC."""
+	return _conditions.order_by(field, direction, DIALECT)
+
+
+def safe_limit(limit, offset=None):
+	"""LIMIT con los valores convertidos a entero."""
+	return _conditions.limit_query(limit, offset, DIALECT)
+
+
+# ---------------------------------------------------------------------------
+# Deprecación de los operadores por interpolación
+# ---------------------------------------------------------------------------
+
+_REEMPLAZOS = {'like': 'where.like', 'not_like': 'where.not_like', 'ilike': 'where.ilike', 'equals': 'where.equals', 'not_equals': 'where.not_equals', 'greater_than': 'where.greater_than', 'greater_than_or_equal': 'where.greater_than_or_equal', 'less_than': 'where.less_than', 'less_than_or_equal': 'where.less_than_or_equal', 'between': 'where.between', 'not_between': 'where.not_between', 'in_list': 'where.in_list', 'not_in_list': 'where.not_in_list', 'starts_with': 'where.starts_with', 'ends_with': 'where.ends_with', 'contains': 'where.contains', 'not_contains': 'where.not_contains', 'date_equals': 'where.date_equals', 'date_greater_than': 'where.date_greater_than', 'date_less_than': 'where.date_less_than', 'date_between': 'where.date_between', 'concat_and': 'where.all_', 'concat_or': 'where.any_', 'order_by': 'safe_order_by', 'order_by_desc': "safe_order_by(campo, 'DESC')", 'limit_query': 'safe_limit'}
+
+
+def _deprecar(fn, nombre, reemplazo):
+	@functools.wraps(fn)
+	def envoltorio(*args, **kwargs):
+		warnings.warn(
+			"pg_query.%s() interpola el valor dentro del SQL en vez de "
+			"parametrizarlo. Usá %s(), que devuelve un Condition." % (nombre, reemplazo),
+			DeprecationWarning,
+			stacklevel=2,
+		)
+		return fn(*args, **kwargs)
+	return envoltorio
+
+
+for _nombre, _reemplazo in _REEMPLAZOS.items():
+	if _nombre in globals():
+		globals()[_nombre] = _deprecar(globals()[_nombre], _nombre, _reemplazo)
+
+del _nombre, _reemplazo

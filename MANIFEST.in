@@ -1,0 +1,5 @@
+# setuptools mete `tests/` en el sdist por heurística propia, aunque estén en
+# el .gitignore. El wheel no los incluye, pero el sdist sí: sin esta exclusión,
+# publicar en PyPI publicaría la suite de regresión.
+prune tests
+exclude docker-compose.yml

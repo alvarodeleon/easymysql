@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easymysql"
+version = "0.2.0.0rc1"
+description = "Easy MySQL and PostgreSQL manager"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Alvaro De Leon", email = "deleon@adl.com.uy" }]
+keywords = ["mysql", "postgresql", "sql", "query"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Topic :: Database",
+]
+
+# Solo PyMySQL es obligatorio. Antes `install_requires` listaba psycopg2 **y**
+# psycopg2-binary: psycopg2 necesita compilador y libpq-dev, con lo que
+# `pip install easymysql` fallaba en cualquier máquina sin toolchain, incluso
+# para quien sólo quería MySQL.
+dependencies = ["pymysql>=1.0"]
+
+[project.optional-dependencies]
+postgres = ["psycopg2-binary>=2.9"]
+dev = ["pytest>=7", "psycopg2-binary>=2.9"]
+
+[project.urls]
+Homepage = "https://github.com/alvarodeleon/easymysql"
+Source = "https://github.com/alvarodeleon/easymysql"
+
+[tool.setuptools]
+packages = ["easymysql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Los de integración necesitan `docker compose up -d`; se excluyen por defecto.
+addopts = "-m 'not integration'"
+markers = [
+  "integration: requiere MySQL y PostgreSQL levantados (docker-compose.yml)",
+]
+filterwarnings = [
+  # Los operadores heredados avisan en cada uso; la suite los sigue
+  # ejercitando a propósito mientras existan.
+  "ignore::DeprecationWarning:easymysql.my_query",
+  "ignore::DeprecationWarning:easymysql.pg_query",
+]

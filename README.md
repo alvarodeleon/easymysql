@@ -30,25 +30,94 @@ my = mysql('localhost','user_db','pass_db','db_name')
 ```
 
 ### PostgreSQL
-```
+
+PostgreSQL support requires the extra: `pip install easymysql[postgres]`
+
+```python
 #!/usr/bin/python
 
-from easymysql.mysql import postgresql
+from easymysql.postgres import postgresql
 
 my = postgresql('localhost','user_db','pass_db','db_name')
 ```
+
+### Connection options
+
+Any extra keyword argument is passed straight to the underlying driver:
+
+```python
+my = mysql('localhost','user','pass','db',
+           port=3307, connect_timeout=5, charset='utf8mb4')
+
+pg = postgresql('localhost','user','pass','db',
+                port=5433, sslmode='require')
+```
+
+`charset` defaults to `utf8mb4` on MySQL. Both classes work as context
+managers:
+
+```python
+with mysql('localhost','user','pass','db') as my:
+    rows = my.select('table_name')
+```
+
+## Error handling
+
+**Statement errors are raised, not printed.** A failed `insert`, `update`,
+`delete` or `select` propagates the driver exception and no commit happens:
+
+```python
+try:
+    my.insert('users', {'email': 'already@taken.com'})
+except Exception as e:
+    ...   # the row was NOT inserted and NOT committed
+```
+
+Library messages go through the standard `logging` module under the
+`easymysql` logger.
+
+## Thread safety
+
+A connection instance is **safe** to share between threads but **not
+parallel**: every operation takes an instance-level lock, so queries are
+serialized. For real parallelism use one instance per thread, or a connection
+pool.
+
 ## Query Builder
 
-### Query Builder MySQL
-```
-#!/usr/bin/python
+### `where` — parameterized conditions (recommended)
 
-from easymysql.my_query import from select,insert,update,concat_and,concat_or,like,is_not_null,date_between,in_list,between
+`where` builds `Condition` objects that carry the SQL and its parameters
+separately, so values never touch the query text:
+
+```python
+from easymysql.my_query import where          # or easymysql.pg_query
+
+cond = where.equals('active', True) & where.greater_than('stock', 0)
+rows = my.select('products', cond)
+
+my.select('products', where.any_(
+    where.contains('name', '50%'),            # the % is escaped, not a wildcard
+    where.in_list('category_id', [1, 2, 3]),  # an empty list matches nothing
+))
 ```
-### Query Builder PostgreSQL
+
+A `Condition` cannot be interpolated into a string — the parameters would be
+lost — so pass it directly, or unpack it with `sql, params = cond`.
+
+### Legacy operators (deprecated)
+
+```python
+from easymysql.my_query import select,insert,update,concat_and,concat_or,like,is_not_null,date_between,in_list,between
 ```
+
+```python
 from easymysql.pg_query import select,insert,update,concat_and,concat_or,like,ilike,is_not_null,date_between,in_list,between
 ```
+
+These interpolate the value into the SQL string and emit a
+`DeprecationWarning`. They are kept for backward compatibility; prefer
+`where`.
 
 ## Inserting Data
 Inserting data is extremely easy; you only need to provide two parameters: the table name and an array with the data to insert:

@@ -14,7 +14,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
+import copy
 import hashlib
+import ipaddress
 import html
 import json
 import base64
@@ -22,6 +24,7 @@ import pickle
 import re
 import urllib
 import urllib.parse
+import warnings
 
 def generate_structure(path,rules, structure=None):
 	levels = path.split('.')
@@ -75,11 +78,18 @@ def validate_schema(variable, schema,messages=None,options=None):
 			if item in variable:
 				if not check.rules(variable[item],schema[item]):
 					messages.append('{} is not valid'.format(item))
-				
-				if options is not None:
-					if schema[item].find('options') != -1:
-						if not variable[item] in options[item]:
-							messages.append('{} is not valid'.format(item))
+
+				# El flag de activación era global al validador y el dato es
+				# por campo: si otro campo declaraba options, este bloque
+				# corría igual y explotaba con KeyError.
+				if 'options' in [r.strip() for r in schema[item].split(',')]:
+					if options is None or item not in options:
+						raise ValueError(
+							"el campo '{}' declara la regla 'options' pero no se "
+							"pasó options=[...] en rules()".format(item)
+						)
+					if not variable[item] in options[item]:
+						messages.append('{} is not valid'.format(item))
 
 
 			else:
@@ -109,9 +119,12 @@ def apply_filters_schema(variable, schema,messages=None):
 		if isinstance(schema[item],str):
 			if item in variable:
 				variable[item] = filter(variable[item],schema[item])
-			
+
 		elif isinstance(schema[item],dict):
-			apply_filters_schema(variable[item],schema[item])
+			# Antes recursaba sin comprobar que la rama existiera: un campo
+			# anidado ausente en los datos daba KeyError.
+			if item in variable and isinstance(variable[item], dict):
+				apply_filters_schema(variable[item],schema[item])
 
 	return variable
 
@@ -121,7 +134,19 @@ def clean_data(variable, schema):
 	if isinstance(schema, str):
 		schema = json.loads(schema)
 	if isinstance(variable, str):
-		variable = json.loads(variable)
+		try:
+			variable = json.loads(variable)
+		except ValueError as err:
+			raise ValueError(
+				"clean_data recibió un string que no es JSON válido: {}".format(err)
+			) from err
+
+	# Antes una lista producía `IndexError: list assignment index out of range`
+	# al intentar borrar por clave.
+	if not isinstance(variable, dict):
+		raise TypeError(
+			"clean_data espera un diccionario, no {}".format(type(variable).__name__)
+		)
 
 	keys_to_delete = []
 
@@ -163,12 +188,16 @@ def getValue(path, schema, absolute=''):
 class InputRules:
 
 	def __init__(self,data):
-		self.__data = data
+		# Copia defensiva: verify() limpia los campos no declarados y los
+		# filtros transforman los valores. Sin esta copia, ambas cosas
+		# mutaban el diccionario del llamante.
+		self.__data = copy.deepcopy(data)
 		self.__data_struct = None
 		self.__data_filters = None
 		self.__errors = []
 		self.__options = {}
 		self.__options_struct = {}
+		self.__filters_applied = False
 
 	def rules(self,field,rules,filters=None,options=None):
 
@@ -185,11 +214,18 @@ class InputRules:
 		return self.__errors
 
 	def data(self):
-		self.__data = apply_filters_schema(self.__data,self.__data_filters)
-		return self.__data
+		# Los filtros se aplican una única vez. Antes se re-aplicaban en cada
+		# llamada: dos data() seguidos con el filtro 'md5' devolvían
+		# md5(md5(valor)), y el resultado dependía de cuántas veces se hubiera
+		# llamado al getter.
+		if not self.__filters_applied and self.__data_filters is not None:
+			self.__data = apply_filters_schema(self.__data,self.__data_filters)
+			self.__filters_applied = True
+
+		return copy.deepcopy(self.__data)
 
 	def schema(self):
-		return jsontools.convertToJson(self.__data_struct)
+		return jsontools.convertToJson(self.__data_struct or {})
 	
 	def verify(self):
 
@@ -232,7 +268,10 @@ class check:
 
 		_check= True
 
-		explode_rules = rules.split(',')
+		# Se descartan los espacios y los elementos vacíos: antes,
+		# "required, integer" con un espacio tras la coma lanzaba
+		# ValueError('Rule  integer not found').
+		explode_rules = [r.strip() for r in rules.split(',') if r.strip()]
 
 		for rule in explode_rules:
 
@@ -301,9 +340,29 @@ class check:
 
 	@staticmethod
 	def sanitize_sql(user_input):
+		"""
+		DEPRECADO. **No protege contra inyección SQL.**
+
+		Es una lista negra, y como toda lista negra es evadible: la propia
+		eliminación reconstruye patrones ("DROP DROP TABLE TABLE x" queda como
+		"DROP  TABLE x") y no cubre variantes triviales como `OR 2=2`. Además
+		destruye datos legítimos: un comentario que contenga "update the set
+		of rules" o un guion doble pierde texto de forma irreversible.
+
+		Usá consultas parametrizadas: los constructores `*_params` y `where`
+		de `my_query`/`pg_query`.
+		"""
+		warnings.warn(
+			"check.sanitize_sql() no protege contra inyección SQL: es una lista "
+			"negra evadible que además mutila datos legítimos. Usá consultas "
+			"parametrizadas (my_query.where / *_params).",
+			DeprecationWarning,
+			stacklevel=2,
+		)
+
 		if user_input is None:
 			return ""
-		
+
 		# Convert to string if not already
 		user_input = str(user_input)
 		
@@ -354,10 +413,16 @@ class check:
 
 	@staticmethod
 	def uuid(value):
-		if re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", value):
-			return True
-		else:
+		# Los validadores de formato devuelven False ante cualquier valor que
+		# no sea string. Antes llamaban a re.match() directamente y lanzaban
+		# TypeError con None, int o list: un JSON con `null` producía un 500
+		# en vez de un error de validación.
+		if not isinstance(value, str):
 			return False
+		return bool(re.match(
+			r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z",
+			value,
+		))
 
 	#Arrays
 	@staticmethod
@@ -370,62 +435,81 @@ class check:
 	#Contents
 	@staticmethod
 	def domain(value):
-		return bool(re.match(r"^(?=.{1,255}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z]{2,})+$", value))
+		# \w con re.UNICODE acepta dominios internacionalizados: 'ñandú.com.uy'
+		# es registrable y el regex anterior lo rechazaba.
+		if not isinstance(value, str):
+			return False
+		return bool(re.match(
+			r"\A(?=.{1,255}\Z)[^\W_](?:[\w-]{0,61}[^\W_])?(?:\.[^\W\d_]{2,})+\Z",
+			value,
+			re.UNICODE,
+		))
 
 	@staticmethod
 	def ip(value):
-		valid = bool(re.match(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$',value))
+		"""
+		Valida IPv4 e IPv6 con `ipaddress`.
 
-		if not valid:
+		El regex anterior aceptaba '01.02.03.04': los ceros a la izquierda se
+		interpretan como octal en algunas resoluciones y son un vector clásico
+		de bypass de listas blancas. Tampoco soportaba IPv6.
+		"""
+		if not isinstance(value, str):
 			return False
-		else:
-			parts = value.split('.')
-			for part in parts:
-				if int(part)>255:
-					return False
-
-		return True
+		try:
+			ipaddress.ip_address(value)
+			return True
+		except ValueError:
+			return False
 
 	@staticmethod
 	def mail(value):
-		# Improved regex for email validation
-		if re.match(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", value):
-			return True
-		else:
+		# \w con re.UNICODE acepta direcciones internacionalizadas (RFC 6531).
+		# \A y \Z en vez de ^ y $ para que un \n final no permita colar texto.
+		if not isinstance(value, str):
 			return False
-
-	'''
-	def filename(value):
-		return re.match(r"^[A-Za-z0-9\_\-\.]+$",value)
-	'''
+		return bool(re.match(
+			r"\A[\w.+-]+@[\w-]+\.[\w.-]+\Z",
+			value,
+			re.UNICODE,
+		))
 
 	#States
 	@staticmethod
 	def empty(value):
+		"""
+		Ausencia de contenido.
+
+		Tabla de verdad:
+
+			None, '', '   ', [], {}, (), set()   -> True
+			0, 0.0, False, '0', cualquier objeto -> False
+
+		**Cero no es vacío.** Antes `empty(0)` era True mientras
+		`rules(0,'required')` era True, con lo que `"required,!empty"` sobre
+		un 0 se contradecía consigo mismo.
+		"""
 		if value is None:
 			return True
-		
-		if value == '':
-			return True
-		
-		# Handle collections (list, dict, tuple, set)
-		if isinstance(value, (list, dict, tuple, set)):
-			return len(value) == 0
-		
-		# Handle boolean explicitly (False is a valid value, not empty)
+
+		# bool antes que el resto: False es un valor, no una ausencia.
 		if isinstance(value, bool):
 			return False
-		
-		# Handle numeric values (0 and 0.0 are considered empty)
-		if check.numeric(value):
-			return value == 0 or value == 0.0
-		
-		# Handle strings (already checked for '' above)
-		if check.string(value):
+
+		if isinstance(value, str):
 			return value.strip() == ''
-		
-		# For any other type, consider not empty
-		return False
+
+		if isinstance(value, (list, dict, tuple, set, frozenset)):
+			return len(value) == 0
+
+		# Los números nunca son vacíos, incluido el cero.
+		if check.numeric(value):
+			return False
+
+		try:
+			return len(value) == 0
+		except TypeError:
+			return False
 
 
 	#types
@@ -438,17 +522,13 @@ class check:
 
 	@staticmethod
 	def integer(value):
-		if isinstance(value,int):
-			return True
-		else:
-			return False
+		# bool es subclase de int: sin la exclusión, `True` pasaba como entero
+		# y luego filter('int') lo convertía en 1.
+		return isinstance(value,int) and not isinstance(value,bool)
 
 	@staticmethod
 	def float(value):
-		if isinstance(value,float):
-			return True
-		else:
-			return False
+		return isinstance(value,float) and not isinstance(value,bool)
 
 	@staticmethod
 	def numeric(value):
@@ -488,17 +568,45 @@ def filter(value,rules):
 
 	]
 
-	tmp = rules.split(',')
+	# Se descartan los espacios: "trim, upper" lanzaba ValueError.
+	tmp = [r.strip() for r in rules.split(',') if r.strip()]
+
+	vistos = set()
+	for rule in tmp:
+		if rule in vistos:
+			warnings.warn(
+				"filtro '{}' repetido en '{}': aplicarlo dos veces no es "
+				"idempotente ('a & b' con xss,xss da 'a &amp;amp; b')".format(rule, rules),
+				UserWarning,
+				stacklevel=2,
+			)
+		vistos.add(rule)
 
 	for rule in tmp:
 
 		if rule not in rules_list:
 			raise ValueError('Filter {} not found'.format(rule))
 
+		# None se propaga sin transformar: antes todos los filtros hacían
+		# str(value) y guardaban la cadena 'None'. El filtro 'str' es la
+		# excepción explícita, que lo convierte en ''.
+		if value is None and rule not in ('str', 'string', 'json'):
+			continue
+
 		if rule=='int' or rule=='integer':
 			try:
-				value = int(value)
-			except:
+				if isinstance(value, float):
+					# Truncar en silencio es pérdida de datos.
+					if not value.is_integer():
+						raise ValueError(
+							'Value {!r} is not an integer: truncarlo perdería datos'.format(value)
+						)
+					value = int(value)
+				else:
+					value = int(value)
+			except ValueError:
+				raise
+			except Exception:
 				raise ValueError('Value is not integer')
 			continue
 
@@ -576,7 +684,16 @@ def filter(value,rules):
 			continue
 
 		if rule=='striptags':
-			value = re.sub('<[^<]+?>', '', str(value))
+			# Se aplica hasta punto fijo: en una sola pasada,
+			# '<<script>script>' quedaba como '<script>' — la eliminación
+			# reconstruía la etiqueta.
+			value = str(value)
+			while True:
+				limpio = re.sub('<[^<>]*>', '', value)
+				if limpio == value:
+					break
+				value = limpio
+			value = value.replace('<', '').replace('>', '')
 			continue
 
 		if rule=='stripslashes':
@@ -650,7 +767,7 @@ class jsontools:
 	def validate(data):
 		try:
 			json.loads(data)
-		except ValueError as err:
+		except (ValueError, TypeError) as err:
 			#print(err)
 			return False
 		return True
@@ -664,26 +781,27 @@ class jsontools:
 
 	@staticmethod
 	def convertToJson(data):
+		"""
+		Serializa a JSON indentado. Devuelve False si el dato no es
+		serializable.
 
-		if isinstance(data,dict):
+		Antes se serializaba con str(dict) + replace("'", '"'), que produce
+		repr de Python y no JSON: fallaba con comillas dobles, None, True y
+		claves no-string, y el mecanismo de centinela que lo parcheaba dejaba
+		el texto '### single quote ###' dentro del diccionario del llamante.
+		"""
+		if data is None:
+			return False
 
-			for k, v in data.items():
-				if k.find("'") !=-1 :
-					k = k.replace("'","### single quote ###")
-
-				if isinstance(v,str) and v.find("'") !=-1 :
-					v = v.replace("'","### single quote ###")
-
-				data[k]=v
-
-			data = str(data)
-			data = data.replace("'",'"')
-			data = data.replace("### single quote ###","'")
-			#data = data.replace('\\',"")
+		if isinstance(data,(dict,list)):
+			try:
+				return json.dumps(data,indent=1,ensure_ascii=False)
+			except (TypeError, ValueError):
+				return False
 
 		try:
-			return json.dumps(json.loads(data),indent=1)
-		except ValueError as err:
+			return json.dumps(json.loads(data),indent=1,ensure_ascii=False)
+		except (ValueError, TypeError) as err:
 			return False
 
 	@staticmethod
