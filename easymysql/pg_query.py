@@ -14,8 +14,6 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
-import functools
-import warnings
 from typing import Iterable, Union, Dict, Any
 
 from . import _sql
@@ -84,283 +82,129 @@ def _process_condition(condition):
 	"""
 	return _sql.process_condition(condition, DIALECT)
 
-def select(table, condition: Union[str, Dict[str, Any]]="", fields="*", order="") -> str:
-	# Procesar condición usando el helper
-	processed_condition = _process_condition(condition)
-
-	if len(processed_condition) > 0:
-		query = "SELECT " + fields + " FROM " + table + " WHERE " + processed_condition
-	else:
-		query = "SELECT " + fields + " FROM " + table
-
-	if len(order)>0:
-		query = query + " " + order
-
-	return query
-
-def insert(table: str, data: dict) -> str:
-	fields = []
-	values = []
-		
-	for key, value in data.items():
-		fields.append(f'"{key}"')
-		if value is None:
-			values.append("NULL")
-		else:
-			# Escapar comillas simples para prevenir SQL injection
-			escaped_value = str(value).replace("'", "''")
-			values.append(f"'{escaped_value}'")
-		
-	fields_str = ", ".join(fields)
-	values_str = ", ".join(values)
-		
-	# Usar RETURNING id para obtener el ID insertado
-	query = f'INSERT INTO "{table}" ({fields_str}) VALUES ({values_str}) RETURNING id'
-
-	return query
-
-def update(table: str, data: dict, condition: Union[str, Dict[str, Any]]) -> str:
-	"""
-	Actualiza registros en la tabla.
-		
-	Args:
-		table (str): Nombre de la tabla
-		data (dict): Datos a actualizar
-		condition (Union[str, Dict[str, Any]]): Condición WHERE
-	"""
-	if not isinstance(data, dict):
-		raise ValueError("data debe ser un diccionario")
-		
-	# Construir SET clause
-	set_clauses = []
-	for key, value in data.items():
-		if value is None:
-			set_clauses.append(f'"{key}" = NULL')
-		else:
-			escaped_value = str(value).replace("'", "''")
-			set_clauses.append(f'"{key}" = \'{escaped_value}\'')
-		
-	values_str = ", ".join(set_clauses)
-		
-	# Procesar condición
-	where_clause = _process_condition(condition)
-		
-	query = f'UPDATE "{table}" SET {values_str} WHERE {where_clause}'
-
-	return query
-
-def delete(table,condition):
-    return f"DELETE FROM {table} WHERE {condition}"
-
-def ilike(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} ILIKE '%{escaped_value}%'"
-
-def like(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} LIKE '%{escaped_value}%'"
-
-def not_like(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} NOT LIKE '%{escaped_value}%'"
-
-def concat_or(*args):
-	sentences = ""
-	for arg in args:
-		sentences += f"{arg} OR "
-
-	return f"({sentences[:-4]})"
-
-def concat_and(*args):
-	sentences = ""
-	for arg in args:
-		sentences += f"{arg} AND "
-	return f"({sentences[:-5]})"
-
-# Operadores de comparación
-def equals(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} = '{escaped_value}'"
-
-def not_equals(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} != '{escaped_value}'"
-
-def greater_than(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} > '{escaped_value}'"
-
-def greater_than_or_equal(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} >= '{escaped_value}'"
-
-def less_than(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} < '{escaped_value}'"
-
-def less_than_or_equal(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} <= '{escaped_value}'"
-
-# Operadores de rango
-def between(field, value1, value2):
-    escaped_value1 = str(value1).replace("'", "''")
-    escaped_value2 = str(value2).replace("'", "''")
-    return f"{field} BETWEEN '{escaped_value1}' AND '{escaped_value2}'"
-
-def not_between(field, value1, value2):
-    escaped_value1 = str(value1).replace("'", "''")
-    escaped_value2 = str(value2).replace("'", "''")
-    return f"{field} NOT BETWEEN '{escaped_value1}' AND '{escaped_value2}'"
-
-# Operadores de existencia
-def exists(subquery):
-    """
-    EXISTS sobre una subconsulta.
-
-    ⚠️ Recibe **SQL crudo** y lo interpola tal cual. El nombre del parámetro
-    era `field`, lo que inducía a `exists('activo')` → `EXISTS (activo)`,
-    error de sintaxis. Nunca lo construyas con entrada de usuario.
-    """
-    return f"EXISTS ({subquery})"
-
-
-def in_list(field, values):
-    escaped_values = [str(v).replace("'", "''") for v in values]
-    values_str = "', '".join(escaped_values)
-    return f"{field} IN ('{values_str}')"
-
-def not_in_list(field, values):
-    escaped_values = [str(v).replace("'", "''") for v in values]
-    values_str = "', '".join(escaped_values)
-    return f"{field} NOT IN ('{values_str}')"
-
-
-
-#Operadores de Nulidad
-def is_null(field):
-    return f"{field} IS NULL"
-
-def is_not_null(field):
-    return f"{field} IS NOT NULL"
-
-
-# Funciones de Texto Adicionales
-def starts_with(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} LIKE '{escaped_value}%'"
-
-def ends_with(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} LIKE '%{escaped_value}'"
-
-def contains(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} LIKE '%{escaped_value}%'"
-
-def not_contains(field, value):
-    escaped_value = str(value).replace("'", "''")
-    return f"{field} NOT LIKE '%{escaped_value}%'"
-
-# Funciones de Fecha
-def date_equals(field, date):
-    escaped_date = str(date).replace("'", "''")
-    return f"DATE({field}) = '{escaped_date}'"
-
-def date_greater_than(field, date):
-    escaped_date = str(date).replace("'", "''")
-    return f"DATE({field}) > '{escaped_date}'"
-
-def date_less_than(field, date):
-    escaped_date = str(date).replace("'", "''")
-    return f"DATE({field}) < '{escaped_date}'"
-
-def date_between(field, start_date, end_date):
-    escaped_start = str(start_date).replace("'", "''")
-    escaped_end = str(end_date).replace("'", "''")
-    return f"DATE({field}) BETWEEN '{escaped_start}' AND '{escaped_end}'"
-
-# Funciones de Ordenamiento
-def order_by(field, direction="ASC"):
-    return f"ORDER BY {field} {direction}"
-
-def order_by_desc(field):
-    return f"ORDER BY {field} DESC"
-
-def limit_query(limit, offset=None):
-    if offset is not None:
-        return f"LIMIT {limit} OFFSET {offset}"
-    return f"LIMIT {limit}"
-
-def group_by(field):
-    return f"GROUP BY {field}"
-
-def having(condition):
-    """
-    ⚠️ Recibe **SQL crudo** y lo interpola tal cual. Nunca lo construyas con
-    entrada de usuario sin validar.
-    """
-    return f"HAVING {condition}"
-
-# Funciones de Negación
-def not_condition(condition):
-    """
-    ⚠️ Recibe **SQL crudo** y lo interpola tal cual. La versión parametrizada
-    es `where.not_(condicion)` o el operador `~`.
-    """
-    return f"NOT ({condition})"
-
-
 # ---------------------------------------------------------------------------
-# Constructores parametrizados (recomendados)
+# Constructores de condiciones
 #
-# Los operadores de arriba interpolan el valor dentro del string SQL. `where`
-# devuelve objetos Condition, que llevan el SQL y los parámetros separados:
+# Devuelven un `Condition`, que lleva el SQL y sus parámetros por separado
+# hasta el driver. Se componen con `&` (AND), `|` (OR) y `~` (NOT), o con
+# `all_()` / `any_()` / `not_()` para listas.
 #
-#     from easymysql.pg_query import where
-#     db.select("productos", where.equals("activo", True) & where.greater_than("stock", 0))
+#     from easymysql.pg_query import equals, greater_than
+#     db.select("productos", equals("activo", True) & greater_than("stock", 0))
 #
-# Además corrigen bugs de resultado que los operadores viejos no pueden
-# arreglar sin cambiar su firma: lista vacía en in_list/not_in_list, comodines
-# de LIKE sin escapar, y precedencia al mezclar AND con OR.
+# El builder está ligado al dialecto del módulo: es lo único que distingue a
+# `my_query` de `pg_query`.
+
+# `ilike` e `icontains` sólo existen acá: en MySQL las collations _ci ya
+# comparan sin distinguir mayúsculas.
 # ---------------------------------------------------------------------------
 
-where = _conditions.ConditionBuilder(DIALECT)
+_builder = _conditions.ConditionBuilder(DIALECT)
+
 Condition = _conditions.Condition
 
+equals                = _builder.equals
+not_equals            = _builder.not_equals
+greater_than          = _builder.greater_than
+greater_than_or_equal = _builder.greater_than_or_equal
+less_than             = _builder.less_than
+less_than_or_equal    = _builder.less_than_or_equal
+between               = _builder.between
+not_between           = _builder.not_between
+in_list               = _builder.in_list
+not_in_list           = _builder.not_in_list
+is_null               = _builder.is_null
+is_not_null           = _builder.is_not_null
+contains              = _builder.contains
+not_contains          = _builder.not_contains
+starts_with           = _builder.starts_with
+ends_with             = _builder.ends_with
+like                  = _builder.like
+not_like              = _builder.not_like
+all_                  = _builder.all_
+any_                  = _builder.any_
+not_                  = _builder.not_
+raw                   = _builder.raw
+ilike                 = _builder.ilike
+icontains             = _builder.icontains
+date_equals           = _builder.date_equals
+date_greater_than     = _builder.date_greater_than
+date_less_than        = _builder.date_less_than
+date_between          = _builder.date_between
 
-def safe_order_by(field, direction="ASC"):
+
+# ---------------------------------------------------------------------------
+# Cláusulas
+#
+# No son condiciones: devuelven un fragmento de SQL sin parámetros, y por eso
+# validan en vez de escapar.
+# ---------------------------------------------------------------------------
+
+def order_by(field, direction="ASC") -> str:
 	"""ORDER BY con la dirección validada contra ASC/DESC."""
 	return _conditions.order_by(field, direction, DIALECT)
 
 
-def safe_limit(limit, offset=None):
+def group_by(field) -> str:
+	"""GROUP BY con el identificador delimitado."""
+	return _conditions.group_by(field, DIALECT)
+
+
+def limit(count, offset=None) -> str:
 	"""LIMIT con los valores convertidos a entero."""
-	return _conditions.limit_query(limit, offset, DIALECT)
+	return _conditions.limit_query(count, offset, DIALECT)
 
 
-# ---------------------------------------------------------------------------
-# Deprecación de los operadores por interpolación
-# ---------------------------------------------------------------------------
+def having(sql: str) -> str:
+	"""
+	HAVING a partir de SQL crudo.
 
-_REEMPLAZOS = {'like': 'where.like', 'not_like': 'where.not_like', 'ilike': 'where.ilike', 'equals': 'where.equals', 'not_equals': 'where.not_equals', 'greater_than': 'where.greater_than', 'greater_than_or_equal': 'where.greater_than_or_equal', 'less_than': 'where.less_than', 'less_than_or_equal': 'where.less_than_or_equal', 'between': 'where.between', 'not_between': 'where.not_between', 'in_list': 'where.in_list', 'not_in_list': 'where.not_in_list', 'starts_with': 'where.starts_with', 'ends_with': 'where.ends_with', 'contains': 'where.contains', 'not_contains': 'where.not_contains', 'date_equals': 'where.date_equals', 'date_greater_than': 'where.date_greater_than', 'date_less_than': 'where.date_less_than', 'date_between': 'where.date_between', 'concat_and': 'where.all_', 'concat_or': 'where.any_', 'order_by': 'safe_order_by', 'order_by_desc': "safe_order_by(campo, 'DESC')", 'limit_query': 'safe_limit'}
-
-
-def _deprecar(fn, nombre, reemplazo):
-	@functools.wraps(fn)
-	def envoltorio(*args, **kwargs):
-		warnings.warn(
-			"pg_query.%s() interpola el valor dentro del SQL en vez de "
-			"parametrizarlo. Usá %s(), que devuelve un Condition." % (nombre, reemplazo),
-			DeprecationWarning,
-			stacklevel=2,
-		)
-		return fn(*args, **kwargs)
-	return envoltorio
+	Es la contraparte de `raw()` para cláusulas: `select()` no transporta
+	parámetros fuera del WHERE, así que acá no hay dónde ponerlos. Nunca lo
+	construyas con entrada de usuario sin validar.
+	"""
+	return f"HAVING {sql}"
 
 
-for _nombre, _reemplazo in _REEMPLAZOS.items():
-	if _nombre in globals():
-		globals()[_nombre] = _deprecar(globals()[_nombre], _nombre, _reemplazo)
+def exists(subquery: str, params=()) -> "_conditions.Condition":
+	"""EXISTS sobre una subconsulta, con los valores en `params`."""
+	return _conditions.exists(subquery, params)
 
-del _nombre, _reemplazo
+
+__all__ = [
+	"Condition",
+	# condiciones
+	"equals",
+	"not_equals",
+	"greater_than",
+	"greater_than_or_equal",
+	"less_than",
+	"less_than_or_equal",
+	"between",
+	"not_between",
+	"in_list",
+	"not_in_list",
+	"is_null",
+	"is_not_null",
+	"contains",
+	"not_contains",
+	"starts_with",
+	"ends_with",
+	"like",
+	"not_like",
+	"all_",
+	"any_",
+	"not_",
+	"raw",
+	"ilike",
+	"icontains",
+	"date_equals",
+	"date_greater_than",
+	"date_less_than",
+	"date_between",
+	# cláusulas
+	"order_by", "group_by", "limit", "having", "exists",
+	# constructores (sql, params)
+	"condition_params", "insert_params", "update_params",
+	"delete_params", "select_params",
+]

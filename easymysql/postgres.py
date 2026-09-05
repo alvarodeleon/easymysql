@@ -40,9 +40,11 @@ def _es_conexion_caida(exc) -> bool:
 	return isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError))
 
 from .connector import connector
-from .pg_query import *
-# `import *` no trae los nombres que empiezan con guion bajo.
-from .pg_query import _process_condition
+from .pg_query import (
+	condition_params, insert_params, update_params, delete_params, select_params,
+)
+# `_table` y `_process_condition` empiezan con guion bajo: van aparte.
+from .pg_query import _process_condition, _table
 
 class postgresql(connector):
 	"""
@@ -451,12 +453,48 @@ class postgresql(connector):
 			self.__cerrar_recursos()
 			self.__closed = True
 
-	def resetCache(self):
+	def resetSession(self):
 		"""
-		En PostgreSQL no hay RESET QUERY CACHE; DISCARD ALL limpia el estado
-		de la sesión.
+		Devuelve la sesión al estado que tenía recién conectada: `DISCARD ALL`
+		libera planes, sentencias preparadas, tablas temporales y el resto del
+		estado de sesión.
+
+		Se llamaba `resetCache()`, pero acá nunca hubo un cache que resetear:
+		el nombre describía la sentencia de MySQL, no lo que hace esto.
+
+		No puede correr dentro de una transacción -- PostgreSQL responde
+		`DISCARD ALL cannot run inside a transaction block` --, así que la
+		guarda avisa antes de que el driver tire un error más oscuro.
+
+		El contador no alcanza para saber si hay una transacción abierta: la
+		conexión vive en `autocommit=False` y psycopg2 mete un BEGIN implícito
+		antes de la primera sentencia, así que con `__tx_depth == 0` igual se
+		está dentro de un bloque -- basta un `select()` previo. Por eso se
+		cierra lo pendiente y se ejecuta con autocommit puesto, restaurándolo
+		después.
 		"""
-		self.execute("DISCARD ALL")
+		with self._lock:
+			self.__comprobar_abierta()
+			if self.__tx_depth > 0:
+				raise RuntimeError(
+					"no se puede resetear la sesión con una transacción abierta: "
+					"PostgreSQL rechaza DISCARD ALL dentro de un bloque de "
+					"transacción"
+				)
+			if self.__db is None:
+				return
+
+			# Cierra el BEGIN implícito. En este punto `__tx_depth` es 0, así
+			# que lo único pendiente es el snapshot de lectura: no hay trabajo
+			# sin commitear que se pueda perder.
+			self.__db.commit()
+
+			previo = getattr(self.__db, "autocommit", False)
+			self.__db.autocommit = True
+			try:
+				self.execute("DISCARD ALL")
+			finally:
+				self.__db.autocommit = previo
 
 	def truncate(self, table: str):
 		"""Trunca una tabla."""
@@ -528,6 +566,23 @@ class postgresql(connector):
 			return True
 
 	def is_in_transaction(self) -> bool:
+		"""
+		¿Hay una transacción **de la librería** abierta?
+
+		Refleja el contador propio, no el estado del driver, y es a propósito.
+		`get_transaction_status()` de psycopg2 parece la respuesta correcta
+		—vería un `BEGIN` hecho por fuera— pero no sirve: psycopg2 abre una
+		transacción implícita antes de la primera sentencia, así que devuelve
+		`INTRANS` después de cualquier `select()`, indistinguible de un `BEGIN`
+		crudo. Verificado contra PostgreSQL 16.14 el 2026-09-05.
+
+		Usarlo acá rompería `execute_multiple()`, que pregunta esto para decidir
+		si abre transacción propia: un lote ejecutado después de cualquier
+		consulta previa se quedaría sin `BEGIN` y sin `commit`.
+
+		**Límite conocido:** una transacción abierta por fuera de la librería no
+		se detecta. Está documentado en `change.md` §7.
+		"""
 		return self.__tx_depth > 0
 
 	def transaction(self):

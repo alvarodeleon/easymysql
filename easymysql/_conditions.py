@@ -18,21 +18,18 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 Constructores de condiciones parametrizadas.
 
-Los operadores históricos (`equals`, `like`, `between`, …) devuelven un string
-con el valor ya interpolado, lo que en MySQL es evadible con un backslash. No
-se pueden arreglar sin romper su firma, porque un parámetro no sobrevive a una
-interpolación en un f-string.
+Cada constructor devuelve un `Condition`, que lleva el SQL y los parámetros
+por separado hasta el driver. Los operadores históricos devolvían un string
+con el valor ya interpolado —evadible en MySQL con un backslash— y se
+eliminaron: nunca llegaron a publicarse.
 
-Este módulo ofrece la alternativa: cada constructor devuelve un `Condition`,
-que lleva el SQL y los parámetros por separado hasta el driver.
+	from easymysql.my_query import equals, greater_than
 
-	from easymysql.my_query import where
+	c = equals("active", True) & greater_than("stock", 0)
+	db.select("products", c)
 
-	c = where.equals("activo", True) & where.greater_than("stock", 0)
-	db.select("productos", c)
-
-También se puede componer con `where.all_(...)` / `where.any_(...)`, que es lo
-mismo que `&` y `|` pero para listas.
+También se puede componer con `all_(...)` / `any_(...)`, que es lo mismo que
+`&` y `|` pero para listas.
 """
 
 import json
@@ -89,13 +86,37 @@ class Condition:
 		return self._combine(other, "OR")
 
 	def __invert__(self):
+		"""NOT con el operando envuelto: `NOT` liga más fuerte que `AND`."""
 		return Condition(f"NOT ({self.sql})", self.params)
 
 	def _combine(self, other, op):
+		"""
+		Combina dos condiciones envolviendo **cada operando**, no sólo el
+		resultado.
+
+		Envolver sólo el resultado no alcanza. `AND` liga más fuerte que `OR`,
+		así que un operando que trae un `OR` en su nivel superior se reagrupa
+		solo al combinarlo con `AND`:
+
+			raw("a = %s OR b = %s") & equals("c", 1)
+
+		daba `(a = %s OR b = %s AND c = %s)`, que SQL lee como
+		`a OR (b AND c)`. Verificado contra MySQL 8: con las filas
+		(a,b,c) = (1,0,0) y (1,0,1) devolvía las dos en vez de sólo la
+		segunda. Sin error, con filas de más.
+
+		Ningún constructor de este módulo dispara el caso —el único que
+		devuelve dos predicados es `date_equals`, y son un `AND`, que bajo
+		`OR` agrupa bien igual— pero `raw()` y cualquier `Condition` armado a
+		mano sí.
+
+		`_join` ya envolvía cada operando, así que `a & b` y `all_(a, b)`
+		generaban SQL distinto para lo mismo. Ahora coinciden.
+		"""
 		if not isinstance(other, Condition):
 			return NotImplemented
 		return Condition(
-			f"({self.sql} {op} {other.sql})",
+			f"(({self.sql}) {op} ({other.sql}))",
 			self.params + other.params,
 		)
 
@@ -147,7 +168,7 @@ class ConditionBuilder:
 	"""
 	Constructores de `Condition` ligados a un dialecto.
 
-	Se expone como `my_query.where` y `pg_query.where`.
+	Los módulos `my_query` y `pg_query` exponen sus métodos como funciones.
 	"""
 
 	def __init__(self, dialect):
@@ -178,20 +199,20 @@ class ConditionBuilder:
 	def not_(self, condition: Condition) -> Condition:
 		return ~condition
 
-	def _join(self, conditions, op, vacio):
-		reales = [c for c in conditions if c is not None]
-		for c in reales:
+	def _join(self, conditions, op, empty):
+		present = [c for c in conditions if c is not None]
+		for c in present:
 			if not isinstance(c, Condition):
 				raise TypeError(
 					f"se esperaba un Condition, no {type(c).__name__}. "
-					"Usá where.raw(sql, params) para SQL crudo."
+					"Usá raw(sql, params) para SQL crudo."
 				)
-		if not reales:
-			return vacio
-		if len(reales) == 1:
-			return reales[0]
-		sql = f" {op} ".join(f"({c.sql})" for c in reales)
-		params = tuple(p for c in reales for p in c.params)
+		if not present:
+			return empty
+		if len(present) == 1:
+			return present[0]
+		sql = f" {op} ".join(f"({c.sql})" for c in present)
+		params = tuple(p for c in present for p in c.params)
 		return Condition(f"({sql})", params)
 
 	# -- comparación --------------------------------------------------------
@@ -265,7 +286,7 @@ class ConditionBuilder:
 		return self._like(field, f"%{_escape_like(value)}%")
 
 	def not_contains(self, field, value) -> Condition:
-		return self._like(field, f"%{_escape_like(value)}%", negado=True)
+		return self._like(field, f"%{_escape_like(value)}%", negated=True)
 
 	def starts_with(self, field, value) -> Condition:
 		return self._like(field, f"{_escape_like(value)}%")
@@ -273,32 +294,32 @@ class ConditionBuilder:
 	def ends_with(self, field, value) -> Condition:
 		return self._like(field, f"%{_escape_like(value)}")
 
-	def like(self, field, patron) -> Condition:
+	def like(self, field, pattern) -> Condition:
 		"""
 		LIKE con el patrón tal cual: los `%` y `_` del argumento **sí** son
 		comodines. Para buscar un literal usá contains/starts_with/ends_with.
 		"""
-		return Condition(f"{self._f(field)} LIKE %s", (patron,))
+		return Condition(f"{self._f(field)} LIKE %s", (pattern,))
 
-	def not_like(self, field, patron) -> Condition:
-		return Condition(f"{self._f(field)} NOT LIKE %s", (patron,))
+	def not_like(self, field, pattern) -> Condition:
+		return Condition(f"{self._f(field)} NOT LIKE %s", (pattern,))
 
-	def ilike(self, field, patron) -> Condition:
+	def ilike(self, field, pattern) -> Condition:
 		"""LIKE sin distinguir mayúsculas. Sólo PostgreSQL."""
 		if self._d.name != "postgres":
 			raise NotImplementedError(
 				"ILIKE es de PostgreSQL. En MySQL la comparación de texto ya es "
 				"insensible a mayúsculas con las collations _ci."
 			)
-		return Condition(f"{self._f(field)} ILIKE %s", (patron,))
+		return Condition(f"{self._f(field)} ILIKE %s", (pattern,))
 
 	def icontains(self, field, value) -> Condition:
 		"""Contiene, sin distinguir mayúsculas. Sólo PostgreSQL."""
 		return self.ilike(field, f"%{_escape_like(value)}%")
 
-	def _like(self, field, patron, negado=False):
-		op = "NOT LIKE" if negado else "LIKE"
-		return Condition(f"{self._f(field)} {op} %s ESCAPE '\\\\'", (patron,))
+	def _like(self, field, pattern, negated=False):
+		op = "NOT LIKE" if negated else "LIKE"
+		return Condition(f"{self._f(field)} {op} %s ESCAPE '\\\\'", (pattern,))
 
 	# -- fechas -------------------------------------------------------------
 	#
@@ -338,8 +359,24 @@ def order_by(field, direction="ASC", dialect=None) -> str:
 	"""
 	if str(direction).upper() not in ("ASC", "DESC"):
 		raise ValueError(f"direction debe ser ASC o DESC, no {direction!r}")
-	campo = dialect.ident(field) if dialect is not None else field
-	return f"ORDER BY {campo} {str(direction).upper()}"
+	name = dialect.ident(field) if dialect is not None else field
+	return f"ORDER BY {name} {str(direction).upper()}"
+
+
+def group_by(field, dialect=None) -> str:
+	"""GROUP BY con el identificador delimitado."""
+	name = dialect.ident(field) if dialect is not None else field
+	return f"GROUP BY {name}"
+
+
+def exists(subquery: str, params=()) -> Condition:
+	"""
+	EXISTS sobre una subconsulta.
+
+	`subquery` es SQL: se interpola tal cual. Los valores van en `params`,
+	nunca dentro del string.
+	"""
+	return Condition(f"EXISTS ({subquery})", params)
 
 
 def limit_query(limit, offset=None, dialect=None) -> str:

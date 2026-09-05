@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easymysql"
-version = "0.2.0.0rc1"
+version = "0.2.0.0"
 description = "Easy MySQL and PostgreSQL manager"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.9"
 license = { text = "GPL-3.0-or-later" }
-authors = [{ name = "Alvaro De Leon", email = "deleon@adl.com.uy" }]
+authors = [{ name = "Alvaro De Leon", email = "info@alvardeleon.com" }]
 keywords = ["mysql", "postgresql", "sql", "query"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -18,6 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
   "Topic :: Database",
 ]
@@ -30,7 +31,9 @@ dependencies = ["pymysql>=1.0"]
 
 [project.optional-dependencies]
 postgres = ["psycopg2-binary>=2.9"]
-dev = ["pytest>=7", "psycopg2-binary>=2.9"]
+dev = ["pytest>=7", "psycopg2-binary>=2.9",
+       # Los tests que leen este archivo usan tomllib, que es 3.11+.
+       'tomli>=2; python_version<"3.11"']
 
 [project.urls]
 Homepage = "https://github.com/alvarodeleon/easymysql"
@@ -49,6 +52,13 @@ markers = [
 filterwarnings = [
   # Los operadores heredados avisan en cada uso; la suite los sigue
   # ejercitando a propósito mientras existan.
-  "ignore::DeprecationWarning:easymysql.my_query",
-  "ignore::DeprecationWarning:easymysql.pg_query",
+  #
+  # Se filtra por **prefijo del mensaje**, no por módulo. El campo `module` de
+  # un filtro no matchea dónde vive el `warnings.warn()` sino el frame que
+  # elige su `stacklevel`, y los operadores usan `stacklevel=2` para señalar al
+  # llamante: ahí el módulo es el del test, no `easymysql.my_query`. El campo
+  # del mensaje tampoco es una regex — pytest lo pasa por `re.escape` —, así
+  # que es un prefijo literal.
+  "ignore:my_query.:DeprecationWarning",
+  "ignore:pg_query.:DeprecationWarning",
 ]

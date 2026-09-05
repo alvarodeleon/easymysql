@@ -38,22 +38,16 @@ ofrece esa forma para ninguno de los dos backends.
 # Fuente única de verdad de la versión: `pyproject.toml` la lee de acá y los
 # métodos `version()` de ambos backends la devuelven. Antes había tres valores
 # distintos en tres lugares (mysql 0.2.0.0, postgres 0.1.0, setup.py 0.2.0.0).
-__version__ = "0.2.0.0rc1"
+__version__ = "0.2.0.0"
 
-__all__ = ["InputRules", "check", "filter", "__version__"]
+__all__ = ["__version__"]
 
 
 def __getattr__(name):
 	"""
-	Importación perezosa de `rules`, para que `import easymysql` no arrastre
-	los drivers de base de datos.
-
 	Las clases de conexión **no** se exponen acá a propósito: ver el docstring
 	del módulo.
 	"""
-	if name in ("InputRules", "check", "filter", "jsontools"):
-		from . import rules
-		return getattr(rules, name)
 	if name in ("mysql", "postgresql"):
 		raise AttributeError(
 			f"importá la clase desde su submódulo: "
