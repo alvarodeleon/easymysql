@@ -1,4 +1,10 @@
 dist/*
 build/*
-tests/*
 **/__pycache__/*
+.venv/
+.pytest_cache/
+*.egg-info/
+tests/**
+tmp/**
+.coverage
+htmlcov/

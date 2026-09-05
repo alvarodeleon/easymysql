@@ -197,9 +197,12 @@ class connector(ABC):
 		pass
 	
 	@abstractmethod
-	def resetCache(self):
+	def resetSession(self):
 		"""
-		Resetea la caché de consultas.
+		Devuelve la sesión al estado que tenía recién conectada.
+
+		No puede llamarse con una transacción abierta: las implementaciones
+		lanzan `RuntimeError` en ese caso.
 		"""
 		pass
 	
