@@ -16,6 +16,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 
 from abc import ABC, abstractmethod
+from ._types import ConditionInput, Params, Row
 from typing import Iterable, Union, Dict, Any
 
 
@@ -26,7 +27,7 @@ class connector(ABC):
 	"""
 	
 	@abstractmethod
-	def __init__(self, hostname: str, username: str, password: str, database: str):
+	def __init__(self, hostname: str, username: str, password: str, database: str, **kwargs):
 		"""
 		Inicializa la conexión a la base de datos.
 		
@@ -73,7 +74,7 @@ class connector(ABC):
 		pass
 	
 	@abstractmethod
-	def execute(self, query: str):
+	def execute(self, query: str, params: Params = None):
 		"""
 		Ejecuta una consulta SQL.
 		
@@ -104,7 +105,7 @@ class connector(ABC):
 		pass
 	
 	@abstractmethod
-	def query(self, query: str) -> list:
+	def query(self, query: str, params: Params = None) -> list[Row]:
 		"""
 		Ejecuta una consulta SQL y retorna los resultados.
 		
@@ -127,7 +128,7 @@ class connector(ABC):
 		pass
 	
 	@abstractmethod
-	def getLastId(self) -> Union[int, None]:
+	def getLastId(self) -> Any:
 		"""
 		Retorna el ID de la última fila insertada.
 		
@@ -137,13 +138,14 @@ class connector(ABC):
 		pass
 	
 	@abstractmethod
-	def select(self, table: str, condition: Union[str, Dict[str, Any]] = "", fields: str = "*", order: str = "") -> list:
+	def select(self, table: str, condition: ConditionInput = "", fields: str = "*", order: str = "", *, order_by=None, limit=None, offset=None,
+	           group_by=None, having=None, for_update: bool=False) -> list[Row]:
 		"""
 		Ejecuta una consulta SELECT.
 		
 		Args:
 			table (str): Nombre de la tabla
-			condition (Union[str, Dict[str, Any]]): Condición WHERE
+			condition (ConditionInput): Condición WHERE
 			fields (str): Campos a seleccionar
 			order (str): Cláusula ORDER BY
 			
@@ -153,7 +155,7 @@ class connector(ABC):
 		pass
 	
 	@abstractmethod
-	def insert(self, table: str, data: dict) -> Union[int, None]:
+	def insert(self, table: str, data: dict) -> Any:
 		"""
 		Inserta un nuevo registro en la tabla.
 		
@@ -167,25 +169,25 @@ class connector(ABC):
 		pass
 	
 	@abstractmethod
-	def update(self, table: str, data: dict, condition: Union[str, Dict[str, Any]]):
+	def update(self, table: str, data: dict, condition: ConditionInput):
 		"""
 		Actualiza registros en la tabla.
 		
 		Args:
 			table (str): Nombre de la tabla
 			data (dict): Datos a actualizar
-			condition (Union[str, Dict[str, Any]]): Condición WHERE
+			condition (ConditionInput): Condición WHERE
 		"""
 		pass
 	
 	@abstractmethod
-	def delete(self, table: str, condition: Union[str, Dict[str, Any]]):
+	def delete(self, table: str, condition: ConditionInput):
 		"""
 		Elimina registros de la tabla.
 		
 		Args:
 			table (str): Nombre de la tabla
-			condition (Union[str, Dict[str, Any]]): Condición WHERE
+			condition (ConditionInput): Condición WHERE
 		"""
 		pass
 	
@@ -246,7 +248,7 @@ class connector(ABC):
 	@abstractmethod
 	def is_in_transaction(self) -> bool:
 		"""
-		Retorna True si hay una transacción activa.
+		Retorna True si hay una transacción de la biblioteca activa.
 		
 		Returns:
 			bool: True si hay una transacción activa

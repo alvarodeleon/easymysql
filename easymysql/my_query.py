@@ -16,6 +16,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 
+from ._types import ConditionInput, Params, Row
 from typing import Iterable, Union, Dict, Any
 
 from . import _sql
@@ -49,7 +50,7 @@ def _table(name) -> str:
 	return DIALECT.table(name)
 
 
-def condition_params(condition: Union[str, Dict[str, Any], None]):
+def condition_params(condition: ConditionInput):
 	"""Convierte una condición en (fragmento_sql, params)."""
 	return _sql.condition_params(condition, DIALECT)
 
@@ -59,19 +60,19 @@ def insert_params(table: str, data: dict):
 	return _sql.insert_params(table, data, DIALECT)
 
 
-def update_params(table: str, data: dict, condition: Union[str, Dict[str, Any]]):
+def update_params(table: str, data: dict, condition: ConditionInput):
 	"""Devuelve (sql, params) para un UPDATE."""
 	return _sql.update_params(table, data, condition, DIALECT)
 
 
-def delete_params(table: str, condition: Union[str, Dict[str, Any]]):
+def delete_params(table: str, condition: ConditionInput):
 	"""Devuelve (sql, params) para un DELETE."""
 	return _sql.delete_params(table, condition, DIALECT)
 
 
-def select_params(table: str, condition: Union[str, Dict[str, Any]]="", fields="*", order=""):
+def select_params(table: str, condition: ConditionInput="", fields="*", order="", **clauses):
 	"""Devuelve (sql, params) para un SELECT."""
-	return _sql.select_params(table, condition, fields, order, DIALECT)
+	return _sql.select_params(table, condition, fields, order, DIALECT, **clauses)
 
 
 def _process_condition(condition):
@@ -201,3 +202,13 @@ __all__ = [
 	"condition_params", "insert_params", "update_params",
 	"delete_params", "select_params",
 ]
+
+
+def upsert_params(table, data, **options):
+	return _sql.upsert_params(table, data, DIALECT, **options)
+
+
+def insert_many_params(table, rows, **options):
+	return _sql.insert_many_params(table, rows, DIALECT, **options)
+
+__all__ += ["upsert_params", "insert_many_params"]

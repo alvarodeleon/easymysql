@@ -57,7 +57,7 @@ def adapt(value):
 		)
 
 	if isinstance(value, (dict, list)):
-		return json.dumps(value, ensure_ascii=False)
+		return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 	return value
 
@@ -144,6 +144,12 @@ class Condition:
 			"Pasalo directamente:  db.select(tabla, condicion)\n"
 			"O desarmalo:          sql, params = condicion\n"
 			f"Para inspeccionarlo:  repr() -> {self.sql!r} {self.params!r}"
+		)
+
+	def __bool__(self):
+		raise TypeError(
+			"un Condition no es un booleano: usá &, |, ~, all_() o any_(); "
+			"and/or/not de Python descartan condiciones"
 		)
 
 

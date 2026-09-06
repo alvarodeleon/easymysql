@@ -27,8 +27,8 @@ El backend PostgreSQL requiere el extra correspondiente:
 
 	pip install easymysql[postgres]
 
-**Las clases de conexión se importan desde su submódulo, no desde el
-paquete.** `from easymysql import mysql` devolvería el *módulo*
+**Aliases recomendados:** `from easymysql import MySQL, PostgreSQL`.
+Los nombres antiguos de las clases se importan desde su submódulo. `from easymysql import mysql` devolvería el *módulo*
 `easymysql.mysql`, no la clase: el submódulo tiene el mismo nombre que la
 clase y el sistema de importación le da precedencia sobre `__getattr__`. Como
 el error que produce (`'module' object is not callable`) es confuso, no se
@@ -40,14 +40,22 @@ ofrece esa forma para ninguno de los dos backends.
 # distintos en tres lugares (mysql 0.2.0.0, postgres 0.1.0, setup.py 0.2.0.0).
 __version__ = "0.2.0.0"
 
-__all__ = ["__version__"]
+__all__ = ["__version__", "MySQL", "PostgreSQL", "WriteResult"]
 
 
 def __getattr__(name):
 	"""
-	Las clases de conexión **no** se exponen acá a propósito: ver el docstring
-	del módulo.
+	Resuelve los aliases sin importar el driver PostgreSQL hasta que se use.
 	"""
+	if name == "MySQL":
+		from .mysql import mysql
+		return mysql
+	if name == "PostgreSQL":
+		from .postgres import postgresql
+		return postgresql
+	if name == "WriteResult":
+		from ._types import WriteResult
+		return WriteResult
 	if name in ("mysql", "postgresql"):
 		raise AttributeError(
 			f"importá la clase desde su submódulo: "

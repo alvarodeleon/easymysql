@@ -20,6 +20,7 @@ import collections.abc
 import logging
 import threading
 import warnings
+from ._types import ConditionInput, Params, Row
 from typing import Iterable, Union, Dict, Any
 
 import pymysql
@@ -27,38 +28,28 @@ import pymysql.cursors
 
 logger = logging.getLogger(__name__)
 
-	# 2006 "MySQL server has gone away", 2013 "Lost connection during query".
-	# Son los códigos con los que el servidor avisa que cerró la conexión, casi
-	# siempre por `wait_timeout`.
-_CODIGOS_CONEXION_CAIDA = (2006, 2013)
-
-
-def _es_conexion_caida(exc) -> bool:
-	"""¿La excepción indica que el servidor cerró la conexión?"""
-	if not isinstance(exc, (pymysql.err.OperationalError, pymysql.err.InterfaceError)):
-		return False
-	return bool(exc.args) and exc.args[0] in _CODIGOS_CONEXION_CAIDA
 
 from .connector import connector
+from ._convenience import Convenience
+from ._sql import MYSQL
+from ._transaction import TransactionContext, TransactionState, serialized, data_operation
 from .my_query import (
 	condition_params, insert_params, update_params, delete_params, select_params,
 )
 	# `_table` y `_process_condition` empiezan con guion bajo: van aparte.
 from .my_query import _process_condition, _table
 
-class mysql(connector):
+class mysql(Convenience, connector):
 	"""
 	Conector MySQL.
 
-	**Concurrencia:** todas las operaciones se serializan con un lock de
-	instancia. Compartir una instancia entre hilos es seguro pero no
-	paralelo: las consultas se encolan. Para paralelismo real usá una
-	instancia por hilo o un pool de conexiones.
-
-	Antes no había ningún lock y los hilos se robaban el resultset entre
-	sí: cuatro hilos consultando cuatro tablas distintas recibían todos
-	las filas del último execute, sin ningún error.
+	Las operaciones se serializan con un lock de instancia. Las transacciones
+	abiertas con begin()/transaction() pertenecen al hilo que las inició:
+	las operaciones de otros hilos se rechazan hasta que terminen.
+	Para paralelismo o transacciones raw, usá una instancia por trabajador.
 	"""
+
+	_dialect = MYSQL
 
 	def __init__(self,hostname,username,password,database,**kwargs):
 		"""
@@ -79,7 +70,8 @@ class mysql(connector):
 		self.__db = None
 		self.__cursor = None
 		self.__closed = False
-		self.__tx_depth = 0
+		self._tx = TransactionState()
+		self._pending = False
 		self.__last_rowcount = 0
 		self.__last_insert_id = None
 		self._lock = threading.RLock()
@@ -134,33 +126,62 @@ class mysql(connector):
 		except Exception:
 			return False
 
+	@serialized
 	def connect(self):
-		self.__db = pymysql.connect(
+		"""Abre la conexión; si ya está sana no reemplaza recursos.
+
+		El reemplazo explícito se hace con reconnect(). No se permite abrir
+		otra sesión mientras haya una transacción de la biblioteca pendiente.
+		"""
+		self.__comprobar_reconexion()
+		if self.ping() and self.__cursor is not None:
+			return
+		self.__cerrar_recursos()
+		self.__last_rowcount = 0
+		self.__last_insert_id = None
+		try:
+			self.__abrir_recursos()
+		except BaseException:
+			logger.exception("error conectando a MySQL")
+			raise
+
+	def __abrir_recursos(self):
+		# Publicar los recursos solo después de que ambos existan.
+		db = pymysql.connect(
 			host=self.__hostname,
 			user=self.__username,
 			password=self.__password,
 			database=self.__database,
 			**self.__opciones,
 		)
-		self.__cursor = self.__db.cursor()
+		try:
+			cursor = db.cursor()
+		except BaseException:
+			try:
+				db.close()
+			except Exception:
+				logger.debug("error cerrando la conexión sin cursor", exc_info=True)
+			raise
+		self.__db = db
+		self.__cursor = cursor
 		self.__closed = False
+		self._pending = False
 
+	def __comprobar_reconexion(self):
+		self._tx.check_usable()
+		self._ensure_clean()
+		if self._tx.depth > 0:
+			raise RuntimeError(
+				"no se puede reconectar con una transacción abierta: "
+				"se perdería el trabajo no commiteado"
+			)
+
+	@serialized
 	def reconnect(self):
-		"""
-		Reconecta cerrando primero la conexión anterior.
-
-		Antes era un alias de connect(): la conexión vieja quedaba
-		huérfana y se acumulaban sockets y sesiones en el servidor
-		hasta agotar max_connections.
-		"""
-		with self._lock:
-			if self.__tx_depth > 0:
-				raise RuntimeError(
-					"no se puede reconectar con una transacción abierta: "
-					"se perdería el trabajo no commiteado"
-				)
-			self.__cerrar_recursos()
-			self.connect()
+		"""Reemplaza explícitamente la sesión, sin repetir sentencias SQL."""
+		self.__comprobar_reconexion()
+		self.__cerrar_recursos()
+		self.connect()
 
 	def __cerrar_recursos(self):
 		for recurso in (self.__cursor, self.__db):
@@ -173,180 +194,65 @@ class mysql(connector):
 		self.__db = None
 
 	def __comprobar_abierta(self):
+		self._tx.check_usable()
 		if self.__closed:
 			raise RuntimeError("la conexión está cerrada")
 
-	def execute(self,query,params=None):
-		"""
-		Ejecuta una sentencia SQL.
+	@data_operation
+	def execute(self, query: str, params: Params=None):
+		"""SQL raw sin commit ni reintento; terminar con commit()/rollback()."""
+		self._execute(query, params)
 
-		Los errores se propagan. Antes se capturaban y se imprimían por
-		stdout: el llamante no podía saber que la sentencia había
-		fallado y seguía leyendo `lastrowid`, `rowcount` y `description`
-		del cursor, que conservaban los valores de la sentencia
-		anterior.
-
-		Raises:
-			RuntimeError: si la conexión está cerrada.
-			pymysql.MySQLError: cualquier error de la base de datos.
-		"""
-		with self._lock:
-			self.__comprobar_abierta()
-
-			if self.ping() == False:
-				self.reconnect()
-
-			if self.__cursor is None:
-				raise RuntimeError("no hay una conexión activa; llamá a connect()")
-
-					# Se invalidan antes de ejecutar: si la sentencia falla,
-					# count() y getLastId() no deben devolver los valores de
-					# la operación anterior.
-			self.__last_rowcount = 0
-			self.__last_insert_id = None
-
-			try:
-				self.__cursor.execute(query,params)
-			except Exception as e:
-				# El servidor puede haber cerrado la conexión por
-				# `wait_timeout` sin que el socket local se entere.
-				# Se reintenta UNA vez y **sólo fuera de
-				# transacción**: reconectar dentro de una haría
-				# ROLLBACK implícito y perdería el trabajo en
-				# silencio, que es el mecanismo de C-06.
-				if self.__tx_depth > 0 or not _es_conexion_caida(e):
-					raise
-				logger.info("conexión caída (%s); reconectando y reintentando", e)
-				self.reconnect()
-				self.__cursor.execute(query,params)
-
-			self.__last_rowcount = self.__cursor.rowcount if self.__cursor.rowcount is not None and self.__cursor.rowcount >= 0 else 0
-			lastrowid = getattr(self.__cursor, "lastrowid", None)
-			if self.__cursor.description is None and lastrowid:
-				self.__last_insert_id = lastrowid
-
-	def executemany(self, query, params):
-		"""
-		Ejecuta la misma consulta múltiples veces con diferentes parámetros.
-		
-		Args:
-			query (str): Consulta SQL con placeholders (%s, %d, etc.)
-			params (list): Lista de tuplas con los parámetros para cada ejecución
-		
-		Example:
-			query = "INSERT INTO usuarios (nombre, email) VALUES (%s, %s)"
-			params = [("Juan", "juan@example.com"), ("María", "maria@example.com")]
-			db.executemany(query, params)
-
-		Raises:
-			TypeError: si params no es una secuencia de tuplas/listas.
-			pymysql.MySQLError: cualquier error de la base de datos.
-		"""
+	@data_operation
+	def executemany(self, query: str, params):
+		"""Lote transaccional; savepoint propio dentro de otra transacción."""
 		if isinstance(params, (str, bytes)) or not isinstance(params, collections.abc.Sequence):
-			raise TypeError(
-				"params debe ser una secuencia de tuplas, no {}".format(type(params).__name__)
-			)
-
-		with self._lock:
-			self.__comprobar_abierta()
-
-			if self.ping() == False:
-				self.reconnect()
-
-			if self.__cursor is None:
-				raise RuntimeError("no hay una conexión activa; llamá a connect()")
-
-			self.__last_rowcount = 0
-			self.__last_insert_id = None
-
+			raise TypeError("params debe ser una secuencia de tuplas/listas")
+		if any(not isinstance(row, (tuple, list)) for row in params):
+			raise TypeError("cada elemento de params debe ser una tupla/lista")
+		self._ensure_cursor()
+		self._ensure_clean()
+		if not params:
+			return
+		with self.transaction():
 			self.__cursor.executemany(query, params)
-			self.__last_rowcount = max(0, self.__cursor.rowcount or 0)
+			count = max(0, self.__cursor.rowcount or 0)
+		self.__last_rowcount = count
+		self.__last_insert_id = None
 
-				# El commit solo se alcanza si executemany() no lanzó.
-			self.__autocommit()
-
+	@data_operation
 	def execute_multiple(self, queries):
-		"""
-		Ejecuta múltiples consultas SQL de forma secuencial.
-		
-		Args:
-			queries (list): Lista de consultas SQL a ejecutar
-		
-		Example:
-			queries = [
-				"INSERT INTO usuarios (nombre, email) VALUES ('Juan', 'juan@example.com')",
-				"INSERT INTO usuarios (nombre, email) VALUES ('María', 'maria@example.com')",
-				"UPDATE contadores SET valor = valor + 2 WHERE id = 1"
-			]
-			db.execute_multiple(queries)
-
-		El lote se valida entero antes de ejecutar nada: antes se
-		detenía en el primer elemento no-string y commiteaba lo que
-		hubiera alcanzado a ejecutar.
-
-		Raises:
-			TypeError: si algún elemento de la lista no es un string.
-			pymysql.MySQLError: cualquier error de la base de datos.
-		"""
+		"""Lote DML atómico; su fallo revierte solo su savepoint si es anidado."""
+		if isinstance(queries, (str, bytes)):
+			raise TypeError("queries debe ser un iterable de sentencias, no un string")
+		queries = list(queries)
 		for i, query in enumerate(queries):
 			if not isinstance(query, str):
-				raise TypeError(
-					"queries[{}] no es un string: {}".format(i, type(query).__name__)
-				)
+				raise TypeError(f"queries[{i}] no es un string: {type(query).__name__}")
+		pending = [query.strip() for query in queries if query.strip()]
+		self._ensure_cursor()
+		self._ensure_clean()
+		if not pending:
+			return
+		with self.transaction():
+			for sql in pending:
+				self.__cursor.execute(sql)
+				count = max(0, self.__cursor.rowcount or 0)
+		self.__last_rowcount = count
+		self.__last_insert_id = None
 
-		pendientes = [q.strip() for q in queries if q.strip()]
+	@data_operation
+	def query(self, query: str, params: Params=None) -> list[Row]:
+		"""SQL raw con filas materializadas; conserva la transacción pendiente."""
+		self._execute(query, params)
+		return self._fetch_rows()
 
-		with self._lock:
-			self.__comprobar_abierta()
-
-			if self.ping() == False:
-				self.reconnect()
-
-			if self.__cursor is None:
-				raise RuntimeError("no hay una conexión activa; llamá a connect()")
-
-					# El lote va en una transacción propia: antes, si fallaba
-					# la tercera de cinco, las dos primeras quedaban
-					# ejecutadas y sin revertir. Si ya hay una transacción
-					# abierta se respeta y el rollback queda a cargo del
-					# nivel externo.
-			propia = not self.is_in_transaction()
-			if propia:
-				self.begin()
-
-			try:
-				for query in pendientes:
-					self.__cursor.execute(query)
-			except Exception:
-				if propia:
-					self.rollback()
-				raise
-
-					# El commit solo se alcanza si todas las sentencias pasaron.
-			if propia:
-				self.commit()
-
-	def query(self,query,params=None):
-		"""
-		Ejecuta una consulta y devuelve la lista de filas como dicts.
-
-		Raises:
-			pymysql.MySQLError: cualquier error de la base de datos.
-		"""
-			# El execute y el fetch van bajo el mismo lock: si otro hilo
-			# ejecuta entremedio, el cursor compartido devuelve sus filas.
-		with self._lock:
-			self.execute(query,params)
-
-				# description es None cuando la consulta no devuelve filas (INSERT, UPDATE, ...)
-			if self.__cursor.description is None:
-				return []
-
-					# La lista se materializa: un iterador de map() se agota en la
-					# primera fila y las siguientes saldrían como diccionarios vacíos.
-			columns = [x[0] for x in self.__cursor.description]
-
-			return [dict(zip(columns,row))   for row in self.__cursor.fetchall()]
+	def _fetch_rows(self):
+		if self.__cursor.description is None:
+			return []
+		columns = [column[0] for column in self.__cursor.description]
+		return [dict(row) if isinstance(row, collections.abc.Mapping) else dict(zip(columns, row))
+		        for row in self.__cursor.fetchall()]
 
 	def count(self):
 		"""
@@ -371,78 +277,84 @@ class mysql(connector):
 		"""
 		return self.__last_insert_id
 
-	def select(self,table,condition: Union[str, Dict[str, Any]]="",fields="*",order=""):
+	@data_operation
+	def select(self, table: str, condition: ConditionInput="", fields="*", order: str="", *,
+	           order_by=None, limit: Union[int, None]=None, offset: Union[int, None]=None,
+	           group_by=None, having=None, for_update: bool=False) -> list[Row]:
 
 		# La construcción del SQL vive en my_query, igual que postgres.py
 		# delega en pg_query. Antes estaba duplicada acá y las dos copias
 		# ya habían divergido.
-		sql, params = select_params(table,condition,fields,order)
+		clauses = dict(order_by=order_by, limit=limit, offset=offset, group_by=group_by,
+		               having=having, for_update=for_update)
+		if for_update and not self.is_in_transaction():
+			raise RuntimeError("for_update requiere transaction()")
+		sql, params = select_params(table,condition,fields,order, **clauses)
 
 			# Antes se decidía por rowcount y se envolvía el acceso a
 			# description en un `except:` desnudo, con lo que "cero filas" y
 			# "la consulta falló" devolvían lo mismo: [].
 		return self.query(sql,params)
 
-	def insert(self,table,data):
+	@data_operation
+	def insert(self, table: str, data: Row) -> Any:
 
 		# Antes se interpolaba str(data[key]) en crudo, sin ningún
 		# escapado. Ahora los valores viajan como parámetros: el driver
 		# se encarga del quoting y de convertir bool, bytes, datetime y
 		# Decimal al tipo correcto de la columna.
+		self._ensure_clean()
 		sql, params = insert_params(table,data)
 
 			# execute + commit + lectura del ID van bajo el mismo lock: si
 			# otro hilo inserta entremedio, getLastId() devolvería su ID.
-		with self._lock:
-			self.execute(sql,params)
-			self.__autocommit()
-			return self.getLastId()
+		self._execute(sql,params)
+		self.__autocommit()
+		return self.getLastId()
 
-	def update(self,table,data,condition: Union[str, Dict[str, Any]]):
+	@data_operation
+	def update(self,table,data,condition: ConditionInput):
 
+		self._ensure_clean()
 		sql, params = update_params(table,data,condition)
 
-		with self._lock:
-			self.execute(sql,params)
-			self.__autocommit()
+		self._execute(sql,params)
+		self.__autocommit()
 
-	def delete(self,table,condition: Union[str, Dict[str, Any]]):
+	@data_operation
+	def delete(self,table,condition: ConditionInput):
 
+		self._ensure_clean()
 		sql, params = delete_params(table,condition)
 
-		with self._lock:
-			self.execute(sql,params)
-			self.__autocommit()
+		self._execute(sql,params)
+		self.__autocommit()
 
+	@serialized
 	def close(self):
-		"""
-		Cierra la conexión.
+		"""Cierra recursos; revierte trabajo pendiente del propietario."""
+		if self.__closed:
+			return
+		if self._tx.depth > 0 or self._tx.failed:
+			warnings.warn(
+				"close() con una transacción abierta o incierta: se intenta "
+				"revertir el trabajo no commiteado",
+				UserWarning,
+				stacklevel=2,
+			)
+			try:
+				if self.__db is not None:
+					self.__db.rollback()
+			except Exception:
+				logger.debug("error al revertir en close()", exc_info=True)
+		self.__cerrar_recursos()
+		self._tx.clear()
+		self._pending = False
+		self.__last_rowcount = 0
+		self.__last_insert_id = None
+		self.__closed = True
 
-		Si hay una transacción abierta, revierte explícitamente y avisa:
-		antes el cierre provocaba un ROLLBACK implícito del servidor sin
-		ninguna señal, y el trabajo no commiteado desaparecía.
-		"""
-		with self._lock:
-			if self.__closed:
-				return
-
-			if self.__tx_depth > 0:
-				warnings.warn(
-					"close() con una transacción abierta: se revierte el "
-					"trabajo no commiteado",
-					UserWarning,
-					stacklevel=2,
-				)
-				try:
-					if self.__db is not None:
-						self.__db.rollback()
-				except Exception:
-					logger.debug("error al revertir en close()", exc_info=True)
-				self.__tx_depth = 0
-
-			self.__cerrar_recursos()
-			self.__closed = True
-
+	@data_operation
 	def resetSession(self):
 		"""
 		Devuelve la sesión al estado que tenía recién conectada: se van
@@ -463,16 +375,20 @@ class mysql(connector):
 		opciones en el handshake. El costo es un round trip y un
 		connection id nuevo.
 		"""
-		with self._lock:
-			if self.__tx_depth > 0:
-				raise RuntimeError(
-					"no se puede resetear la sesión con una transacción "
-					"abierta: se perdería el trabajo no commiteado"
-				)
-			self.reconnect()
+		self.__comprobar_abierta()
+		if self._tx.depth > 0:
+			raise RuntimeError(
+				"no se puede resetear la sesión con una transacción "
+				"abierta: se perdería el trabajo no commiteado"
+			)
+		self.reconnect()
 
-	def truncate(self,table):
-		self.execute("TRUNCATE {}".format(_table(table)))
+	@data_operation
+	def truncate(self, table):
+		"""TRUNCATE explícito; su atomicidad depende del motor."""
+		self._ensure_clean()
+		self._execute("TRUNCATE {}".format(_table(table)))
+		self.__autocommit()
 
 			# -- transacciones ------------------------------------------------------
 			#
@@ -482,73 +398,128 @@ class mysql(connector):
 
 	def __autocommit(self):
 		"""Commitea solo si no hay ninguna transacción abierta."""
-		if self.__tx_depth == 0 and self.__db is not None:
-			self.__db.commit()
+		if self._tx.depth == 0 and self.__db is not None:
+			self.commit()
 
-	def begin(self):
-		"""
-		Abre una transacción, o un SAVEPOINT si ya hay una abierta.
-		"""
-		with self._lock:
-			self.__comprobar_abierta()
-			if self.__db is None:
-				return False
+	def _native_pending(self):
+		if self.__db is None or not self.ping():
+			return None
+		status = getattr(self.__db, "server_status", None)
+		return bool(status & 1) if isinstance(status, int) else None
 
-			if self.__tx_depth == 0:
+	def _driver_autocommit(self):
+		get_autocommit = getattr(self.__db, "get_autocommit", None)
+		return get_autocommit() is True if get_autocommit is not None else False
+
+	def _ensure_clean(self):
+		"""Profundidad cero no implica una sesión sin trabajo pendiente."""
+		if self._tx.depth == 0 and (self._pending or self._native_pending() is True):
+			raise RuntimeError(
+				"hay trabajo pendiente fuera de transaction(): llamá a commit() "
+				"o rollback() antes de continuar"
+			)
+
+	def _ensure_cursor(self):
+		self.__comprobar_abierta()
+		if not self.ping():
+			raise RuntimeError("no hay una conexión activa; llamá a reconnect()")
+		if self.__cursor is None:
+			raise RuntimeError("no hay una conexión activa; llamá a connect()")
+
+	def _execute(self, sql, params: Params=None):
+		self._ensure_cursor()
+		# Marcar antes del envío: un error no demuestra que no haya trabajo.
+		if self._tx.depth == 0:
+			self._pending = True
+		self.__cursor.execute(sql, params)
+		if self._tx.depth == 0:
+			pending = self._native_pending()
+			self._pending = (not self._driver_autocommit()) if pending is None else pending
+		self.__last_rowcount = max(0, self.__cursor.rowcount or 0)
+		lastrowid = getattr(self.__cursor, "lastrowid", None)
+		if self.__cursor.description is None and lastrowid:
+			self.__last_insert_id = lastrowid
+
+	def _set_metadata(self, count, last_id):
+		self.__last_rowcount = count
+		self.__last_insert_id = last_id
+
+	def _clear_metadata(self):
+		self.__last_rowcount = 0
+		self.__last_insert_id = None
+
+	def __fallo_transaccional(self):
+		self._tx.fail()
+		self.__last_rowcount = 0
+		self.__last_insert_id = None
+
+	@serialized
+	def begin(self) -> bool:
+		"""Abre una transacción del hilo actual, o un savepoint anidado."""
+		self.__comprobar_abierta()
+		self._ensure_clean()
+		if self.__db is None:
+			return False
+		if not self.ping():
+			raise RuntimeError("no hay una conexión activa; llamá a reconnect()")
+		try:
+			if self._tx.depth == 0:
 				self.__db.begin()
 			else:
-				self.execute("SAVEPOINT easymysql_sp_{}".format(self.__tx_depth))
+				self.__cursor.execute(f"SAVEPOINT easymysql_sp_{self._tx.depth}")
+		except BaseException:
+			self.__fallo_transaccional()
+			raise
+		self._tx.opened()
+		return True
 
-			self.__tx_depth += 1
-			return True
-
+	@serialized
 	def commit(self):
-		"""
-		Cierra el nivel de transacción actual. Solo commitea de verdad al
-		salir del nivel más externo.
-		"""
-		with self._lock:
-			if self.__db is None:
-				return
-
-			if self.__tx_depth <= 1:
+		"""Confirma el nivel actual; nunca reintenta un commit fallido."""
+		self._tx.check_usable()
+		if self.__db is None:
+			return
+		try:
+			if self._tx.depth <= 1:
 				self.__db.commit()
-				self.__tx_depth = 0
+				self._tx.clear()
+				self._pending = False
 			else:
-				self.__tx_depth -= 1
-				self.execute("RELEASE SAVEPOINT easymysql_sp_{}".format(self.__tx_depth))
+				self.__cursor.execute(f"RELEASE SAVEPOINT easymysql_sp_{self._tx.depth - 1}")
+				self._tx.ended()
+		except BaseException:
+			self.__fallo_transaccional()
+			raise
 
-	def rollback(self):
-		"""
-		Revierte el nivel actual: la transacción entera si es el más
-		externo, o hasta el SAVEPOINT si es anidado.
-		"""
-		with self._lock:
-			if self.__db is None:
-				return False
+	@serialized
+	def rollback(self) -> bool:
+		"""Revierte el nivel actual; tras un fallo de control, revierte todo.
 
-			if self.__tx_depth <= 1:
+		Un rollback posterior a un commit sin respuesta no demuestra que
+		ese commit no se haya aplicado en el servidor.
+		"""
+		if self.__db is None:
+			return False
+		try:
+			if self._tx.depth <= 1 or self._tx.failed:
 				self.__db.rollback()
-				self.__tx_depth = 0
+				self._tx.clear()
+				self._pending = False
 			else:
-				self.__tx_depth -= 1
-				self.execute("ROLLBACK TO SAVEPOINT easymysql_sp_{}".format(self.__tx_depth))
-			return True
+				name = f"easymysql_sp_{self._tx.depth - 1}"
+				self.__cursor.execute(f"ROLLBACK TO SAVEPOINT {name}")
+				self.__cursor.execute(f"RELEASE SAVEPOINT {name}")
+				self._tx.ended()
+		except BaseException:
+			self.__fallo_transaccional()
+			raise
+		self.__last_rowcount = 0
+		self.__last_insert_id = None
+		return True
 
-	def is_in_transaction(self):
-		"""
-		¿Hay una transacción **de la librería** abierta?
-
-		Refleja el contador propio, no el estado del servidor. PyMySQL no
-		expone nada equivalente a `get_transaction_status()`, y aunque lo
-		hiciera valdría el mismo razonamiento que en el backend de
-		PostgreSQL: `execute_multiple()` pregunta esto para decidir si abre
-		transacción propia.
-
-		**Límite conocido:** una transacción abierta por fuera de la
-		librería no se detecta.
-		"""
-		return self.__tx_depth > 0
+	def is_in_transaction(self) -> bool:
+		"""Indica niveles de la biblioteca; no cuenta transacciones implícitas/raw."""
+		return self._tx.depth > 0
 
 	def transaction(self):
 		"""
@@ -566,29 +537,5 @@ class mysql(connector):
 		"""
 		return _process_condition(condition)
 
-class TransactionContext:
-	"""
-	Contexto de transacción para usar con la declaración 'with'.
-	"""
-	def __init__(self, db_connection):
-		self.db = db_connection
-		self.committed = False
 
-	def __enter__(self):
-		"""
-		Inicia la transacción al entrar al contexto.
-		"""
-		self.db.begin()
-		return self.db
-
-	def __exit__(self, exc_type, exc_val, exc_tb):
-		"""
-		Maneja la salida del contexto de transacción.
-		Si hay una excepción, hace rollback. Si no, hace commit.
-		"""
-		if exc_type is not None:
-			# Hubo una excepción, hacer rollback
-			self.db.rollback()
-		else:
-			# No hubo excepción, hacer commit
-			self.db.commit()
+MySQL = mysql
